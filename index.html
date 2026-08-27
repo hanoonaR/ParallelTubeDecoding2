@@ -10,6 +10,7 @@
   <meta property="og:type" content="website">
   <meta property="og:image" content="assets/figures/qualitative_mainfig.png">
   <title>Locate Anything in Videos · Parallel Tube Decoding</title>
+  <link rel="icon" type="image/png" href="assets/branding/proj_logo.png">
   <link rel="stylesheet" href="styles.css">
   <script defer src="script.js?v=scrollspy-20260827"></script>
 </head>
@@ -252,53 +253,56 @@
                 <p><strong>Results on HC-STVG.</strong> Comparison with backbone baselines and prior methods on HC-STVG v1 and v2. PTD achieves strong temporal localization and the best video IoU across both benchmark versions.</p>
               </figcaption>
             </figure>
-
-            <div class="results-group-heading">
-              <h3>Comparison with SOTA Models</h3>
-            </div>
-
-            <figure class="paper-table-card sota-video-card">
-              <div class="paper-table-image-wrap">
-                <div class="video-stack">
-                  <article class="video-example">
-                    <div class="video-shell">
-                      <video controls muted loop playsinline preload="metadata" poster="assets/posters/card.jpg">
-                        <source src="assets/card.mp4" type="video/mp4">
-                        Your browser does not support embedded video.
-                      </video>
-                    </div>
-                  </article>
-
-                  <article class="video-example">
-                    <div class="video-shell">
-                      <video controls muted loop playsinline preload="metadata" poster="assets/posters/van.jpg">
-                        <source src="assets/van.mp4" type="video/mp4">
-                        Your browser does not support embedded video.
-                      </video>
-                    </div>
-                  </article>
-
-                  <article class="video-example">
-                    <div class="video-shell">
-                      <video controls muted loop playsinline preload="metadata" poster="assets/posters/tart.jpg">
-                        <source src="assets/tart.mp4" type="video/mp4">
-                        Your browser does not support embedded video.
-                      </video>
-                    </div>
-                  </article>
-                </div>
-              </div>
-              <figcaption>
-                <span class="paper-table-number">Qualitative</span>
-                <p>We compare PTD with competitive STVG methods on challenging video-grounding examples. Like many existing approaches, STVG-R1 and DEViL use the MLLM for temporal localization but construct the spatial tube using external detection or tracking modules. In contrast, PTD directly generates both the temporal interval and complete spatial tube, producing more accurate temporal boundaries and spatial localization. The three videos highlight fine-grained target identification among visually similar distractors, large changes in object scale as the target approaches the camera, and event-specific temporal localization rather than simply predicting the full period in which the target is visible.</p>
-              </figcaption>
-            </figure>
           </div>
         </div>
 
         <div class="results-table-group reveal">
           <div class="results-group-heading">
             <span>03</span>
+            <h3>Qualitative Comparison with SOTA Models</h3>
+          </div>
+
+          <figure class="paper-table-card sota-video-card">
+            <div class="paper-table-image-wrap">
+              <div class="video-stack">
+                <article class="video-example">
+                  <div class="video-shell">
+                    <video controls muted loop playsinline preload="metadata" poster="assets/posters/card.jpg">
+                      <source src="assets/card.mp4" type="video/mp4">
+                      Your browser does not support embedded video.
+                    </video>
+                  </div>
+                </article>
+
+                <article class="video-example">
+                  <div class="video-shell">
+                    <video controls muted loop playsinline preload="metadata" poster="assets/posters/van.jpg">
+                      <source src="assets/van.mp4" type="video/mp4">
+                      Your browser does not support embedded video.
+                    </video>
+                  </div>
+                </article>
+
+                <article class="video-example">
+                  <div class="video-shell">
+                    <video controls muted loop playsinline preload="metadata" poster="assets/posters/tart.jpg">
+                      <source src="assets/tart.mp4" type="video/mp4">
+                      Your browser does not support embedded video.
+                    </video>
+                  </div>
+                </article>
+              </div>
+            </div>
+            <figcaption>
+              <span class="paper-table-number">Qualitative</span>
+              <p>We compare PTD with competitive STVG methods on challenging video-grounding examples. Like many existing approaches, STVG-R1 and DEViL use the MLLM for temporal localization but construct the spatial tube using external detection or tracking modules. In contrast, PTD directly generates both the temporal interval and complete spatial tube, producing more accurate temporal boundaries and spatial localization. The three videos highlight fine-grained target identification among visually similar distractors, large changes in object scale as the target approaches the camera, and event-specific temporal localization rather than simply predicting the full period in which the target is visible.</p>
+            </figcaption>
+          </figure>
+        </div>
+
+        <div class="results-table-group reveal">
+          <div class="results-group-heading">
+            <span>04</span>
             <h3>Generalization Beyond STVG</h3>
           </div>
 
@@ -327,7 +331,7 @@
 
         <div class="results-table-group reveal">
           <div class="results-group-heading">
-            <span>04</span>
+            <span>05</span>
             <h3>Ablation Study</h3>
           </div>
 
