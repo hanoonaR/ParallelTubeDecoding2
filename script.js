@@ -66,6 +66,10 @@ window.addEventListener('resize', requestSideNavigationSync, { passive: true });
 window.addEventListener('load', syncSideNavigation);
 syncSideNavigation();
 
+const teaserVideo = document.querySelector('.hero-video-shell video');
+teaserVideo?.addEventListener('mouseenter', () => teaserVideo.play().catch(() => {}));
+teaserVideo?.addEventListener('mouseleave', () => teaserVideo.pause());
+
 const speedCarousel = document.querySelector('[data-speed-carousel]');
 const speedTrack = speedCarousel?.querySelector('[data-speed-track]');
 const speedSlides = [...(speedCarousel?.querySelectorAll('[data-speed-slide]') || [])];
