@@ -140,6 +140,10 @@ Spatio-temporal video grounding requires identifying when a queried event occurs
 
 **Representative failure cases.** Temporally subtle state changes can produce ambiguous event boundaries, while spatial localization becomes difficult for small, rapidly moving, or occluded targets.
 
+## 🙏 Acknowledgements
+
+This codebase is built on [Qwen-VL-Series-Finetune](https://github.com/2U1/Qwen-VL-Series-Finetune). We thank its authors for releasing their fine-tuning framework. We also thank the [Qwen team](https://github.com/QwenLM/Qwen3-VL) for releasing Qwen3-VL and acknowledge [Locate Anything](https://github.com/NVlabs/Eagle/tree/main/Embodied) for making its work and implementation publicly available.
+
 ## 📜 Citation
 
 ```bibtex
