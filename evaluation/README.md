@@ -11,7 +11,7 @@ cp -r \
   "$PTD_REPO/evaluation/lmms_eval/lmms_eval/tasks/vidstg" \
   "$PTD_REPO/evaluation/lmms_eval/lmms_eval/tasks/hcstvg" \
   "$PTD_REPO/evaluation/lmms_eval/lmms_eval/tasks/charades_temp_loc" \
-  "$PTD_REPO/evaluation/lmms_eval/lmms_eval/tasks/activitynet_temp_loc" \
+  "$PTD_REPO/evaluation/lmms_eval/lmms_eval/tasks/activitney_temp_loc" \
   "$LMMS_EVAL_REPO/lmms_eval/tasks/"
 cp "$PTD_REPO/evaluation/lmms_eval/lmms_eval/models/simple/ptd_qwen3_vl.py" \
   "$LMMS_EVAL_REPO/lmms_eval/models/simple/"
