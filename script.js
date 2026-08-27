@@ -76,7 +76,11 @@ const speedNext = speedCarousel?.querySelector('[data-speed-next]');
 if (speedCarousel && speedTrack && speedSlides.length) {
   let speedIndex = 0;
 
-  const showSpeedSlide = (nextIndex) => {
+  const playSpeedVideo = (video) => {
+    video?.play().catch(() => {});
+  };
+
+  const showSpeedSlide = (nextIndex, autoplay = false) => {
     speedIndex = (nextIndex + speedSlides.length) % speedSlides.length;
     speedTrack.style.setProperty('--speed-offset', `${speedIndex * -100}%`);
 
@@ -87,6 +91,7 @@ if (speedCarousel && speedTrack && speedSlides.length) {
       if (video) {
         video.tabIndex = active ? 0 : -1;
         if (!active) video.pause();
+        if (active && autoplay) playSpeedVideo(video);
       }
     });
 
@@ -94,12 +99,20 @@ if (speedCarousel && speedTrack && speedSlides.length) {
     if (speedStatus) speedStatus.textContent = `${name} · ${speedIndex + 1} / ${speedSlides.length}`;
   };
 
-  speedPrevious?.addEventListener('click', () => showSpeedSlide(speedIndex - 1));
-  speedNext?.addEventListener('click', () => showSpeedSlide(speedIndex + 1));
+  speedSlides.forEach((slide, index) => {
+    const video = slide.querySelector('video');
+    video?.addEventListener('mouseenter', () => {
+      if (index === speedIndex) playSpeedVideo(video);
+    });
+    video?.addEventListener('mouseleave', () => video.pause());
+  });
+
+  speedPrevious?.addEventListener('click', () => showSpeedSlide(speedIndex - 1, true));
+  speedNext?.addEventListener('click', () => showSpeedSlide(speedIndex + 1, true));
   speedCarousel.addEventListener('keydown', (event) => {
     if (event.target !== speedCarousel) return;
-    if (event.key === 'ArrowLeft') showSpeedSlide(speedIndex - 1);
-    if (event.key === 'ArrowRight') showSpeedSlide(speedIndex + 1);
+    if (event.key === 'ArrowLeft') showSpeedSlide(speedIndex - 1, true);
+    if (event.key === 'ArrowRight') showSpeedSlide(speedIndex + 1, true);
   });
 
   showSpeedSlide(0);

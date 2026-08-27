@@ -50,7 +50,7 @@
               <img class="affiliation-logo affiliation-logo-uc-merced" src="assets/affiliations/170824_merced_logo_masonserif.png" width="479" height="135" alt="Affiliation 2: University of California, Merced">
             </a>
             <a class="affiliation-logo-link" href="https://apertix.tech/" target="_blank" rel="noreferrer" aria-label="Visit the Apertix website">
-              <img class="affiliation-logo affiliation-logo-apertix" src="assets/affiliations/apertix.png" width="2172" height="724" alt="Affiliation 3: Apertix">
+              <img class="affiliation-logo affiliation-logo-apertix" src="assets/affiliations/apertix_logo.jpeg" width="995" height="269" alt="Affiliation 3: Apertix">
             </a>
           </div>
 
@@ -166,9 +166,18 @@
 
           <div class="speed-carousel-viewport">
             <div class="speed-carousel-track" data-speed-track>
-              <article class="speed-video-card speed-slide" data-speed-slide data-speed-name="Clock">
+              <article class="speed-video-card speed-slide" data-speed-slide data-speed-name="Dog by the river">
                 <div class="speed-video-shell">
-                  <video controls muted loop playsinline preload="metadata" poster="assets/posters/speed-clock.jpg?v=20260827-2022">
+                  <video controls muted loop playsinline preload="metadata" poster="assets/posters/speed-dog-river.jpg?v=20260827-2022">
+                    <source src="assets/speed-dog-river.mp4?v=20260827-2022" type="video/mp4">
+                    Your browser does not support embedded video.
+                  </video>
+                </div>
+              </article>
+
+              <article class="speed-video-card speed-slide" data-speed-slide data-speed-name="Clock" aria-hidden="true">
+                <div class="speed-video-shell">
+                  <video controls muted loop playsinline preload="metadata" poster="assets/posters/speed-clock.jpg?v=20260827-2022" tabindex="-1">
                     <source src="assets/speed-clock.mp4?v=20260827-2022" type="video/mp4">
                     Your browser does not support embedded video.
                   </video>
@@ -179,15 +188,6 @@
                 <div class="speed-video-shell">
                   <video controls muted loop playsinline preload="metadata" poster="assets/posters/speed-apple.jpg?v=20260827-2022" tabindex="-1">
                     <source src="assets/speed-apple.mp4?v=20260827-2022" type="video/mp4">
-                    Your browser does not support embedded video.
-                  </video>
-                </div>
-              </article>
-
-              <article class="speed-video-card speed-slide" data-speed-slide data-speed-name="Dog by the river" aria-hidden="true">
-                <div class="speed-video-shell">
-                  <video controls muted loop playsinline preload="metadata" poster="assets/posters/speed-dog-river.jpg?v=20260827-2022" tabindex="-1">
-                    <source src="assets/speed-dog-river.mp4?v=20260827-2022" type="video/mp4">
                     Your browser does not support embedded video.
                   </video>
                 </div>
@@ -252,6 +252,47 @@
                 <p><strong>Results on HC-STVG.</strong> Comparison with backbone baselines and prior methods on HC-STVG v1 and v2. PTD achieves strong temporal localization and the best video IoU across both benchmark versions.</p>
               </figcaption>
             </figure>
+
+            <div class="results-group-heading">
+              <h3>Comparison with SOTA Models</h3>
+            </div>
+
+            <figure class="paper-table-card sota-video-card">
+              <div class="paper-table-image-wrap">
+                <div class="video-stack">
+                  <article class="video-example">
+                    <div class="video-shell">
+                      <video controls muted loop playsinline preload="metadata" poster="assets/posters/card.jpg">
+                        <source src="assets/card.mp4" type="video/mp4">
+                        Your browser does not support embedded video.
+                      </video>
+                    </div>
+                  </article>
+
+                  <article class="video-example">
+                    <div class="video-shell">
+                      <video controls muted loop playsinline preload="metadata" poster="assets/posters/van.jpg">
+                        <source src="assets/van.mp4" type="video/mp4">
+                        Your browser does not support embedded video.
+                      </video>
+                    </div>
+                  </article>
+
+                  <article class="video-example">
+                    <div class="video-shell">
+                      <video controls muted loop playsinline preload="metadata" poster="assets/posters/tart.jpg">
+                        <source src="assets/tart.mp4" type="video/mp4">
+                        Your browser does not support embedded video.
+                      </video>
+                    </div>
+                  </article>
+                </div>
+              </div>
+              <figcaption>
+                <span class="paper-table-number">Qualitative</span>
+                <p>We compare PTD with competitive STVG methods on challenging video-grounding examples. Like many existing approaches, STVG-R1 and DEViL use the MLLM for temporal localization but construct the spatial tube using external detection or tracking modules. In contrast, PTD directly generates both the temporal interval and complete spatial tube, producing more accurate temporal boundaries and spatial localization. The three videos highlight fine-grained target identification among visually similar distractors, large changes in object scale as the target approaches the camera, and event-specific temporal localization rather than simply predicting the full period in which the target is visible.</p>
+              </figcaption>
+            </figure>
           </div>
         </div>
 
@@ -312,50 +353,6 @@
         <div class="qualitative-results-group">
           <div class="results-group-heading reveal">
             <span>01</span>
-            <h3>Comparison with SOTA Models</h3>
-          </div>
-
-          <figure class="paper-table-card sota-video-card reveal">
-            <div class="paper-table-image-wrap">
-              <div class="video-stack">
-                <article class="video-example">
-                  <div class="video-shell">
-                    <video controls muted loop playsinline preload="metadata" poster="assets/posters/card.jpg">
-                      <source src="assets/card.mp4" type="video/mp4">
-                      Your browser does not support embedded video.
-                    </video>
-                  </div>
-                </article>
-
-                <article class="video-example">
-                  <div class="video-shell">
-                    <video controls muted loop playsinline preload="metadata" poster="assets/posters/van.jpg">
-                      <source src="assets/van.mp4" type="video/mp4">
-                      Your browser does not support embedded video.
-                    </video>
-                  </div>
-                </article>
-
-                <article class="video-example">
-                  <div class="video-shell">
-                    <video controls muted loop playsinline preload="metadata" poster="assets/posters/tart.jpg">
-                      <source src="assets/tart.mp4" type="video/mp4">
-                      Your browser does not support embedded video.
-                    </video>
-                  </div>
-                </article>
-              </div>
-            </div>
-            <figcaption>
-              <span class="paper-table-number">Qualitative</span>
-              <p>We compare PTD with competitive STVG methods on challenging video-grounding examples. Like many existing approaches, STVG-R1 and DEViL use the MLLM for temporal localization but construct the spatial tube using external detection or tracking modules. In contrast, PTD directly generates both the temporal interval and complete spatial tube, producing more accurate temporal boundaries and spatial localization. The three videos highlight fine-grained target identification among visually similar distractors, large changes in object scale as the target approaches the camera, and event-specific temporal localization rather than simply predicting the full period in which the target is visible.</p>
-            </figcaption>
-          </figure>
-        </div>
-
-        <div class="qualitative-results-group">
-          <div class="results-group-heading reveal">
-            <span>02</span>
             <h3>Effect of GRPO Rewards</h3>
           </div>
 
@@ -384,7 +381,7 @@
 
         <div class="qualitative-results-group">
           <div class="results-group-heading reveal">
-            <span>03</span>
+            <span>02</span>
             <h3>Cross-box dependency and error propagation</h3>
           </div>
 
