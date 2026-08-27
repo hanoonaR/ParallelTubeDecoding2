@@ -2,51 +2,22 @@
 
 # Locate Anything in Videos: Rethinking Efficient Generative Spatio-Temporal Video Grounding
 
-Hanoona Rasheed<sup>1</sup> · Haania Siddiqui<sup>1</sup> · Ming-Hsuan Yang<sup>2</sup> · Fahad Shahbaz Khan<sup>1,3</sup> · Salman Khan<sup>1,3</sup>
+<p align="center">
+  <img src="assets/branding/colored_line.png" width="100%" alt="">
+</p>
+
+[Hanoona Rasheed](https://github.com/hanoonaR)<sup>1</sup> · [Haania Siddiqui](https://pk.linkedin.com/in/haaniasiddiqui)<sup>1</sup> · [Ming-Hsuan Yang](https://scholar.google.com.pk/citations?user=p9-ohHsAAAAJ&hl=en)<sup>2</sup> · [Fahad Shahbaz Khan](https://sites.google.com/view/fahadkhans/home)<sup>1,3</sup> · [Salman Khan](https://salman-h-khan.github.io/)<sup>1,3</sup>
 
 <sup>1</sup> Mohamed bin Zayed University of Artificial Intelligence · <sup>2</sup> University of California, Merced · <sup>3</sup> Apertix
 
-<p>
-  <a href="https://mbzuai.ac.ae/"><img src="assets/affiliations/mbzuai.png" height="46" alt="Mohamed bin Zayed University of Artificial Intelligence"></a>
-  &nbsp;&nbsp;&nbsp;&nbsp;
-  <a href="https://www.ucmerced.edu/"><img src="assets/affiliations/170824_merced_logo_masonserif.png" height="46" alt="University of California, Merced"></a>
-  &nbsp;&nbsp;&nbsp;&nbsp;
-  <a href="https://apertix.tech/"><img src="assets/affiliations/apertix.png" height="46" alt="Apertix"></a>
-</p>
-
-[Project Page](https://mbzuai-oryx.github.io/parallel-tube-decoding/)
+![Paper](https://img.shields.io/badge/📄_Paper-Coming_Soon-blue)
+[![Project Page](https://img.shields.io/badge/🌐_Project-Page-blue)](https://mbzuai-oryx.github.io/parallel-tube-decoding/)
 
 </div>
 
-## Abstract
+## 📝 Abstract
 
 Spatio-temporal video grounding requires identifying when a queried event occurs and localizing the referred entity throughout that interval. We introduce **Parallel Tube Decoding (PTD)**, which predicts the temporal interval first and then decodes all time-conditioned spatial blocks in parallel. PTD reduces tube generation to two decoding rounds, independent of tube length, while improving both localization accuracy and inference efficiency.
-
-## Contributions
-
-- **Parallel tube generation.** PTD removes token-level and trajectory-level dependencies by generating the temporal block in one round and all spatial blocks in a second round.
-- **Decoupled Block Attention.** Each spatial block uses the shared video-query context and predicted temporal interval without depending on other generated boxes.
-- **Localization-aware optimization.** Complementary temporal and spatial rewards improve event boundaries, bounding-box geometry, and target consistency.
-- **Efficiency and accuracy.** PTD achieves $79\times$ lower Tube Completion Latency and $92\times$ higher spatial decoding throughput than standard autoregressive decoding while improving grounding performance.
-
-## Using the Code
-
-| Component | Location |
-| --- | --- |
-| Prepare VidSTG and HC-STVG annotations | [Data preparation guide](data/README.md) and the [VidSTG](data/prepare_vidstg.py), [HC-STVG v1](data/prepare_hcstvg_v1.py), and [HC-STVG v2](data/prepare_hcstvg_v2.py) preparation scripts |
-| Run SFT, merge the adapter, and run GRPO | [Training guide](ptd_scripts/README.md), [SFT launcher](ptd_scripts/train_sft.sh), [merge script](ptd_scripts/merge_lora.sh), and [GRPO launcher](ptd_scripts/train_grpo.sh) |
-| PTD generation and attention masking | [PTD generation](src/model/ptd_generation.py) and [PTD mask utilities](src/model/ptd_mask_utils.py) |
-| Evaluate VidSTG, HC-STVG, Charades-STA, and ActivityNet | [Evaluation guide](evaluation/README.md) and [lmms-eval task definitions](evaluation/lmms_eval/lmms_eval/tasks) |
-
-## Parallel Tube Decoding
-
-<p align="center">
-  <video src="assets/videos/ptd_teaser.mp4" poster="assets/videos/ptd_teaser.jpg" width="100%" controls muted loop playsinline preload="metadata">
-    <a href="assets/videos/ptd_teaser.mp4">Watch the PTD teaser video</a>
-  </video>
-</p>
-
-<p align="center"><a href="assets/videos/ptd_teaser.mp4">Watch the teaser video</a></p>
 
 <p align="center">
   <img src="assets/figures/intro_strategies.png" width="100%" alt="Comparison of autoregressive localization strategies with Parallel Tube Decoding">
@@ -54,15 +25,33 @@ Spatio-temporal video grounding requires identifying when a queried event occurs
 
 **Autoregressive localization vs. Parallel Tube Decoding.** Given a video and a referring expression, STVG predicts when the event occurs and the bounding box of the referred entity throughout that interval. PTD generates all time-conditioned spatial blocks in parallel after temporal localization, reducing the sequential decoding depth to $1 + 1$. Compared with standard Unquantized Token Decoding, PTD achieves $79\times$ lower Tube Completion Latency and $92\times$ higher spatial decoding throughput while improving spatio-temporal grounding accuracy.
 
+## 🔥 Contributions
+
+- **Parallel tube generation.** PTD removes token-level and trajectory-level dependencies by generating the temporal block in one round and all spatial blocks in a second round.
+- **Decoupled Block Attention.** Each spatial block uses the shared video-query context and predicted temporal interval without depending on other generated boxes.
+- **Localization-aware optimization.** Complementary temporal and spatial rewards improve event boundaries, bounding-box geometry, and target consistency.
+- **Efficiency and accuracy.** PTD achieves $79\times$ lower Tube Completion Latency and $92\times$ higher spatial decoding throughput than standard autoregressive decoding while improving grounding performance.
+
+## 🛠️ Using the Code
+
+| Component | Location |
+| --- | --- |
+| Install the PTD environment | [Installation guide](INSTALL.md) |
+| Prepare VidSTG and HC-STVG annotations | [Data preparation guide](data/README.md) and the [VidSTG](data/prepare_vidstg.py), [HC-STVG v1](data/prepare_hcstvg_v1.py), and [HC-STVG v2](data/prepare_hcstvg_v2.py) preparation scripts |
+| Run SFT, merge the adapter, and run GRPO | [Training guide](ptd_scripts/README.md), [SFT launcher](ptd_scripts/train_sft.sh), [merge script](ptd_scripts/merge_lora.sh), and [GRPO launcher](ptd_scripts/train_grpo.sh) |
+| Evaluate VidSTG, HC-STVG, Charades-STA, and ActivityNet | [Evaluation guide](evaluation/README.md) and [lmms-eval task definitions](evaluation/lmms_eval/lmms_eval/tasks) |
+
+## 💡 Parallel Tube Decoding
+
 <p align="center">
   <img src="assets/figures/sbd_vs_ptd_attention.png" width="100%" alt="Attention masks for Sequential Block Decoding and Parallel Tube Decoding">
 </p>
 
 **MTP attention masks for Sequential Block Decoding and PTD.** Sequential Block Decoding retains causal attention across spatial blocks. PTD replaces this cross-box dependency with Decoupled Block Attention: every spatial block accesses the shared multimodal prefix and temporal block while all other spatial blocks remain masked.
 
-## Main Results
+## 📊 Main Results
 
-### Decoding strategies
+### ⚡ Decoding strategies
 
 <p align="center">
   <img src="assets/tables/table1.png" width="100%" alt="Comparison of decoding strategies on VidSTG">
@@ -76,7 +65,7 @@ Spatio-temporal video grounding requires identifying when a queried event occurs
 
 **Analysis of decoding efficiency and trajectory-level dependency.** (a) Tube completion latency as the number of grounded frames increases. PTD maintains nearly constant latency, while token-based and block decoding scale with tube length. (b) Attention distribution across tube decoding for Sequential Block Decoding (dotted) and PTD (solid). Sequential decoding progressively shifts attention from the video toward prior text. (c) History-correction analysis for Sequential Block Decoding. Replacing an erroneous box $B_i$ with its ground-truth box improves subsequent predictions, with the effect gradually decreasing as the decoding distance $j-i$ increases.
 
-### Spatio-temporal video grounding
+### 🎯 Spatio-temporal video grounding
 
 <p align="center">
   <img src="assets/tables/table2.png" width="100%" alt="Results on VidSTG">
@@ -90,7 +79,7 @@ Spatio-temporal video grounding requires identifying when a queried event occurs
 
 **Table 3: Results on HC-STVG.** Comparison with backbone baselines and prior methods on HC-STVG v1 and v2. PTD achieves strong temporal localization and the best video IoU across both benchmark versions.
 
-### Generalization beyond STVG
+### 🌐 Generalization beyond STVG
 
 <p align="center">
   <img src="assets/tables/table4.png" width="100%" alt="Zero-shot temporal grounding results on Charades-STA and ActivityNet Captions">
@@ -104,7 +93,7 @@ Spatio-temporal video grounding requires identifying when a queried event occurs
 
 **Table 5: Generalization to grounded VideoQA and video object tracking.** Left: zero-shot evidence-aware question answering on ReXTime. Right: referring video object tracking on Ref-DAVIS, Ref-YT-VOS, and ReasonVOS using SAM2 or SAM3.
 
-### Ablation study
+### 🔬 Ablation study
 
 <p align="center">
   <img src="assets/tables/table6.png" width="100%" alt="Ablation of temporal and spatial localization rewards">
@@ -112,7 +101,7 @@ Spatio-temporal video grounding requires identifying when a queried event occurs
 
 **Table 6: Ablation of localization-aware rewards.** Temporal and spatial rewards provide complementary improvements for declarative and interrogative grounding. Combining both produces the strongest overall spatio-temporal localization performance.
 
-## Qualitative Results
+## 👀 Qualitative Results
 
 <p align="center">
   <img src="assets/figures/qualitative_mainfig.png" width="100%" alt="Qualitative comparison with prior spatio-temporal video grounding methods">
@@ -150,7 +139,7 @@ Spatio-temporal video grounding requires identifying when a queried event occurs
 
 **Representative failure cases.** Temporally subtle state changes can produce ambiguous event boundaries, while spatial localization becomes difficult for small, rapidly moving, or occluded targets.
 
-## Citation
+## 📜 Citation
 
 ```bibtex
 @misc{rasheed2026locateanythingvideos,
@@ -159,3 +148,13 @@ Spatio-temporal video grounding requires identifying when a queried event occurs
   year   = {2026}
 }
 ```
+
+---
+
+<p align="center">
+  <a href="https://www.ival-mbzuai.com"><img src="assets/branding/IVAL_logo.png" width="200" alt="Intelligent Visual Analytics Lab"></a>
+  &nbsp;&nbsp;&nbsp;&nbsp;
+  <a href="https://github.com/mbzuai-oryx"><img src="assets/branding/Oryx_logo.png" width="100" alt="Oryx"></a>
+  &nbsp;&nbsp;&nbsp;&nbsp;
+  <a href="https://mbzuai.ac.ae"><img src="assets/branding/MBZUAI_logo.png" width="360" alt="Mohamed bin Zayed University of Artificial Intelligence"></a>
+</p>
