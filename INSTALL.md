@@ -27,9 +27,3 @@ Run this command from the repository root:
 ```bash
 python -c "import torch, transformers, qwen_vl_utils; print(torch.__version__, transformers.__version__)"
 ```
-
-## Next steps
-
-- [Prepare the VidSTG and HC-STVG training annotations](data/README.md).
-- [Run SFT, merge the adapter, and run GRPO](ptd_scripts/README.md).
-- [Add the PTD evaluation tasks to lmms-eval](evaluation/README.md).
