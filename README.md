@@ -2,11 +2,9 @@
 
 # Locate Anything in Videos: Rethinking Efficient Generative Spatio-Temporal Video Grounding
 
-[Hanoona Rasheed](https://hanoonar.github.io/)<sup>1</sup> · Haania Siddiqui<sup>1</sup> · Ming-Hsuan Yang<sup>2</sup> · Fahad Shahbaz Khan<sup>1,3</sup> · Salman Khan<sup>1,3</sup>
+Hanoona Rasheed<sup>1</sup> · Haania Siddiqui<sup>1</sup> · Ming-Hsuan Yang<sup>2</sup> · Fahad Shahbaz Khan<sup>1,3</sup> · Salman Khan<sup>1,3</sup>
 
-<sup>1</sup> Mohamed bin Zayed University of Artificial Intelligence<br>
-<sup>2</sup> University of California, Merced<br>
-<sup>3</sup> Apertix
+<sup>1</sup> Mohamed bin Zayed University of Artificial Intelligence · <sup>2</sup> University of California, Merced · <sup>3</sup> Apertix
 
 <p>
   <a href="https://mbzuai.ac.ae/"><img src="assets/affiliations/mbzuai.png" height="46" alt="Mohamed bin Zayed University of Artificial Intelligence"></a>
@@ -22,21 +20,39 @@
 
 ## Abstract
 
-Spatio-temporal video grounding (STVG) requires models to identify when a referred event occurs and localize the target entity throughout that interval. Existing multimodal large language models typically serialize dense localization trajectories autoregressively, causing decoding latency to grow with tube length and allowing localization errors to propagate across time. We introduce **Parallel Tube Decoding (PTD)**, a generative formulation that decomposes grounding into a temporal block followed by time-conditioned spatial blocks decoded simultaneously. This removes both token-level and trajectory-level dependencies, reducing the sequential decoding depth to a fixed $1 + 1$ rounds, independent of tube length. To enable parallel spatial generation, we introduce Decoupled Block Attention, which preserves access to shared video-query context while eliminating cross-box dependencies, together with localization-aware policy optimization for temporal boundaries and spatial geometry. On VidSTG, PTD reduces Tube Completion Latency by $79\times$ and increases spatial decoding throughput by $92\times$ over standard autoregressive decoding, while also improving grounding accuracy. With a compact 4B backbone, our model performs favorably on VidSTG and HC-STVG, and generalizes zero-shot to temporal grounding, grounded VideoQA, and referring video object tracking. Our results show that parallel tube generation is an efficient and effective alternative to autoregressive localization in videos.
+Spatio-temporal video grounding requires identifying when a queried event occurs and localizing the referred entity throughout that interval. We introduce **Parallel Tube Decoding (PTD)**, which predicts the temporal interval first and then decodes all time-conditioned spatial blocks in parallel. PTD reduces tube generation to two decoding rounds, independent of tube length, while improving both localization accuracy and inference efficiency.
+
+## Contributions
+
+- **Parallel tube generation.** PTD removes token-level and trajectory-level dependencies by generating the temporal block in one round and all spatial blocks in a second round.
+- **Decoupled Block Attention.** Each spatial block uses the shared video-query context and predicted temporal interval without depending on other generated boxes.
+- **Localization-aware optimization.** Complementary temporal and spatial rewards improve event boundaries, bounding-box geometry, and target consistency.
+- **Efficiency and accuracy.** PTD achieves $79\times$ lower Tube Completion Latency and $92\times$ higher spatial decoding throughput than standard autoregressive decoding while improving grounding performance.
+
+## Using the Code
+
+| Component | Location |
+| --- | --- |
+| Prepare VidSTG and HC-STVG annotations | [Data preparation guide](data/README.md) and the [VidSTG](data/prepare_vidstg.py), [HC-STVG v1](data/prepare_hcstvg_v1.py), and [HC-STVG v2](data/prepare_hcstvg_v2.py) preparation scripts |
+| Run SFT, merge the adapter, and run GRPO | [Training guide](ptd_scripts/README.md), [SFT launcher](ptd_scripts/train_sft.sh), [merge script](ptd_scripts/merge_lora.sh), and [GRPO launcher](ptd_scripts/train_grpo.sh) |
+| PTD generation and attention masking | [PTD generation](src/model/ptd_generation.py) and [PTD mask utilities](src/model/ptd_mask_utils.py) |
+| Evaluate VidSTG, HC-STVG, Charades-STA, and ActivityNet | [Evaluation guide](evaluation/README.md) and [lmms-eval task definitions](evaluation/lmms_eval/lmms_eval/tasks) |
 
 ## Parallel Tube Decoding
+
+<p align="center">
+  <video src="assets/videos/ptd_teaser.mp4" poster="assets/videos/ptd_teaser.jpg" width="100%" controls muted loop playsinline preload="metadata">
+    <a href="assets/videos/ptd_teaser.mp4">Watch the PTD teaser video</a>
+  </video>
+</p>
+
+<p align="center"><a href="assets/videos/ptd_teaser.mp4">Watch the teaser video</a></p>
 
 <p align="center">
   <img src="assets/figures/intro_strategies.png" width="100%" alt="Comparison of autoregressive localization strategies with Parallel Tube Decoding">
 </p>
 
 **Autoregressive localization vs. Parallel Tube Decoding.** Given a video and a referring expression, STVG predicts when the event occurs and the bounding box of the referred entity throughout that interval. PTD generates all time-conditioned spatial blocks in parallel after temporal localization, reducing the sequential decoding depth to $1 + 1$. Compared with standard Unquantized Token Decoding, PTD achieves $79\times$ lower Tube Completion Latency and $92\times$ higher spatial decoding throughput while improving spatio-temporal grounding accuracy.
-
-<p align="center">
-  <img src="assets/figures/ptd_attention.png" width="52%" alt="Decoupled Block Attention in Parallel Tube Decoding">
-</p>
-
-**Decoupled Block Attention in PTD.** Each spatial block attends to the shared multimodal prefix and temporal block, uses bidirectional attention within the block, and remains isolated from other spatial blocks, enabling parallel tube generation.
 
 <p align="center">
   <img src="assets/figures/sbd_vs_ptd_attention.png" width="100%" alt="Attention masks for Sequential Block Decoding and Parallel Tube Decoding">
@@ -108,19 +124,19 @@ Spatio-temporal video grounding (STVG) requires models to identify when a referr
   <img src="assets/figures/sft_vs_temporal_reward.png" width="100%" alt="Effect of the temporal reward">
 </p>
 
-**Effect of the temporal reward.** Green, red, and blue denote the ground-truth, SFT, and GRPO with temporal reward predictions, respectively. The temporal reward improves boundary prediction so that the generated tube aligns with the complete temporal extent of the queried event.
+**Effect of the temporal reward.** The first example shows how the reward recovers the complete interaction when SFT localizes only its most salient portion. The second shows how it prevents the prediction from extending beyond the queried event while the target remains visible.
 
 <p align="center">
   <img src="assets/figures/sft_vs_spatial_reward.png" width="100%" alt="Effect of the spatial reward">
 </p>
 
-**Effect of the spatial reward.** Green, red, and blue denote the ground-truth, SFT, and GRPO with spatial reward predictions, respectively. The spatial reward improves bounding-box precision and consistent target localization under rapid motion, changes in scale, and nearby distractors.
+**Effect of the spatial reward.** The examples highlight tighter localization under rapid motion and more consistent target identity despite substantial scale changes and interference from nearby entities.
 
 <p align="center">
   <img src="assets/figures/sbd_vs_ptd.png" width="100%" alt="Qualitative comparison of Sequential Block Decoding and Parallel Tube Decoding">
 </p>
 
-**Sequential Block Decoding vs. PTD.** Green, red, and blue denote the ground-truth, Sequential Block Decoding, and PTD predictions, respectively. Sequential Block Decoding propagates localization errors across subsequent boxes, whereas PTD maintains tight target localization by removing cross-box dependencies.
+**Sequential Block Decoding vs. PTD.** Abrupt scale changes and partial occlusion expose how Sequential Block Decoding propagates localization errors across subsequent boxes. PTD maintains tighter target localization by removing cross-box dependencies.
 
 <p align="center">
   <img src="assets/figures/qualitative_suppfig.png" width="100%" alt="Additional qualitative results of Parallel Tube Decoding">
@@ -132,13 +148,7 @@ Spatio-temporal video grounding (STVG) requires models to identify when a referr
   <img src="assets/figures/failure_cases.png" width="100%" alt="Representative failure cases">
 </p>
 
-**Representative failure cases.** Temporally subtle state changes can produce ambiguous event boundaries, while spatial localization becomes difficult for small, rapidly moving, or occluded targets. Green and blue denote the ground-truth and PTD predictions, respectively; the horizontal lines indicate their temporal intervals.
-
-## Code
-
-- [Dataset preparation](data/README.md)
-- [SFT and GRPO training](ptd_scripts/README.md)
-- [Evaluation with lmms-eval](evaluation/README.md)
+**Representative failure cases.** Temporally subtle state changes can produce ambiguous event boundaries, while spatial localization becomes difficult for small, rapidly moving, or occluded targets.
 
 ## Citation
 
