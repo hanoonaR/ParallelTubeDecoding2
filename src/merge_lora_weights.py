@@ -29,11 +29,9 @@ def _to_model_key(key, conversion_mapping):
 def collect_base_only_tensors(model_base, model):
     """Tensors that exist in the base checkpoint but not in the instantiated model.
 
-    Qwen3.5 ships a multi-token-prediction head (`mtp.*`, 15 tensors). It is listed in
-    `Qwen3_5PreTrainedModel._keys_to_ignore_on_load_unexpected`, so it is dropped on load
-    and never becomes a submodule. `save_pretrained` can only write what the module holds,
-    which means a merged checkpoint loses those tensors permanently and stops being a
-    drop-in replacement for the base model. Carry them over.
+    Some checkpoints contain tensors that are intentionally skipped when the model is
+    instantiated. `save_pretrained` can only write what the module holds, so carry those
+    checkpoint-only tensors into the merged output.
 
     `_checkpoint_conversion_mapping` has to be applied first. Qwen2-VL and Qwen2.5-VL keep
     their published checkpoints in the pre-refactor layout (`visual.*`, `model.*`) and

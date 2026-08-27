@@ -26,8 +26,12 @@ from .data_utils import (
     llava_to_openai,
     model_supports_optional_reasoning,
     pad_sequence,
+    resolve_video_spec,
     use_default_system_message,
 )
+
+PTD_BLOCK_SIZE = 6
+
 
 class SupervisedDataset(Dataset):
     """Dataset for supervised fine-tuning."""
@@ -74,11 +78,59 @@ class SupervisedDataset(Dataset):
                 f"Current model_type={self.model_type!r} does not qualify."
             )
 
+        tokenizer = self.processor.tokenizer
+
+        def token_id(token):
+            value = tokenizer.convert_tokens_to_ids(token)
+            if value is None or value == tokenizer.unk_token_id:
+                raise ValueError(f"Missing PTD token {token}.")
+            if tokenizer.encode(token, add_special_tokens=False) != [value]:
+                raise ValueError(f"PTD token {token} must encode as one token.")
+            return int(value)
+
+        self.ptd_token_ids = {
+            token: token_id(token)
+            for token in (
+                "<text_mask>",
+                "<null>",
+                "<|object_ref_start|>",
+                "<|object_ref_end|>",
+                "<|time_start|>",
+                "<|time_end|>",
+                "<|box_start|>",
+                "<|box_end|>",
+                DEFAULT_IM_END_TOKEN,
+            )
+        }
+        newline = tokenizer.encode("\n", add_special_tokens=False)
+        if len(newline) != 1:
+            raise ValueError("PTD requires a newline to encode as one token.")
+        self.newline_id = newline[0]
+        self.time_id_to_index = {
+            token_id(f"<t{index}>"): index for index in range(1, 101)
+        }
+        self.time_index_to_id = {
+            index: value for value, index in self.time_id_to_index.items()
+        }
+        self.coordinate_id_to_value = {
+            token_id(f"<{value}>"): value for value in range(1001)
+        }
+
     def __len__(self):
         return len(self.list_data_dict)
 
     def __getitem__(self, i) -> Dict[str, torch.Tensor]:
         sources = self.list_data_dict[i]
+
+        conversations = sources.get("conversations")
+        if "video" not in sources or "image" in sources:
+            raise ValueError("A PTD SFT sample must contain one video.")
+        if not isinstance(conversations, list) or len(conversations) != 2:
+            raise ValueError("A PTD SFT sample must contain one user/assistant pair.")
+        if conversations[0].get("from") != "human" or conversations[1].get("from") != "gpt":
+            raise ValueError("PTD conversation roles must be human followed by gpt.")
+        if conversations[0].get("value", "").count("<video>") != 1:
+            raise ValueError("A PTD prompt must contain one <video> token.")
 
         is_video = False
 
@@ -119,14 +171,14 @@ class SupervisedDataset(Dataset):
             video_files = sources["video"]
             video_folder = self.data_args.image_folder
 
-            if isinstance(video_files, str):
+            if isinstance(video_files, (str, dict)):
                 video_files = [video_files]
+            if len(video_files) != 1:
+                raise ValueError("A PTD SFT sample must contain one video.")
 
             videos = []
             for video_file in video_files:
-                if not os.path.exists(video_file):
-                    if not video_file.startswith("http"):
-                        video_file = os.path.join(video_folder, video_file)
+                video_file = resolve_video_spec(video_file, video_folder)
                 video_input, video_kwargs = get_video_info(
                     video_file, 
                     self.video_min_pixel, 
@@ -135,7 +187,10 @@ class SupervisedDataset(Dataset):
                     self.video_resized_h, 
                     self.data_args.fps,
                     self.image_patch_size,
-                    return_video_metadata=self.return_video_metadata
+                    max_frames=self.data_args.max_frames,
+                    return_video_metadata=self.return_video_metadata,
+                    nframes=self.data_args.nframes,
+                    temporal_patch_size=self.data_args.temporal_patch_size,
                 )
                 videos.append(video_input)
         else:
@@ -302,7 +357,168 @@ class SupervisedDataset(Dataset):
             second_gird = all_second_gird
             data_dict["second_per_grid_ts"] = second_gird
 
-        return data_dict
+        response_tokens = torch.nonzero(labels.ne(IGNORE_INDEX), as_tuple=False).flatten()
+        if response_tokens.numel() == 0:
+            raise ValueError("A PTD SFT sample has no supervised response.")
+        return self._append_ptd_targets(data_dict, int(response_tokens[0]))
+
+    def _append_ptd_targets(self, data, response_start):
+        input_ids = data["input_ids"]
+        labels = data["labels"]
+        ids = self.ptd_token_ids
+        blocks = []
+        targets = []
+        positions = []
+        context_limits = []
+
+        def add_block(query_id, position, context_limit, target):
+            block = input_ids.new_full((PTD_BLOCK_SIZE,), ids["<text_mask>"])
+            block[0] = query_id
+            padded_target = labels.new_full((PTD_BLOCK_SIZE,), ids["<null>"])
+            padded_target[: target.numel()] = target
+            blocks.append(block)
+            targets.append(padded_target)
+            positions.append(torch.arange(position, position + PTD_BLOCK_SIZE))
+            context_limits.append(
+                torch.full((PTD_BLOCK_SIZE,), context_limit, dtype=torch.long)
+            )
+
+        ref_start_id = ids["<|object_ref_start|>"]
+        ref_end_id = ids["<|object_ref_end|>"]
+        if int(input_ids[response_start]) != ref_start_id:
+            raise ValueError("A PTD response must begin with <|object_ref_start|>.")
+        ref_end_matches = torch.nonzero(
+            input_ids[response_start:].eq(ref_end_id), as_tuple=False
+        ).flatten()
+        if ref_end_matches.numel() != 1:
+            raise ValueError("A PTD response must contain one <|object_ref_end|>.")
+        ref_end = response_start + int(ref_end_matches[0])
+
+        cursor = response_start
+        while cursor <= ref_end:
+            stop = min(cursor + PTD_BLOCK_SIZE, ref_end + 1)
+            query_position = cursor - 1
+            while query_position >= 0 and int(input_ids[query_position]) == self.newline_id:
+                query_position -= 1
+            if query_position < 0:
+                raise ValueError("The PTD object reference has no preceding query token.")
+            context_limit = cursor if query_position != cursor - 1 else cursor - 1
+            add_block(
+                int(input_ids[query_position]),
+                cursor - 1,
+                context_limit,
+                input_ids[cursor:stop],
+            )
+            cursor = stop
+
+        time_start_id = ids["<|time_start|>"]
+        time_end_id = ids["<|time_end|>"]
+        segment_starts = []
+        for index in range(ref_end + 1, input_ids.numel() - 3):
+            candidate = [int(value) for value in input_ids[index : index + 4]]
+            if (
+                candidate[0] == time_start_id
+                and candidate[1] in self.time_id_to_index
+                and candidate[2] in self.time_id_to_index
+                and candidate[3] == time_end_id
+            ):
+                segment_starts.append(index)
+        if len(segment_starts) != 1:
+            raise ValueError("A PTD response must contain one temporal segment.")
+        segment_start = segment_starts[0]
+        if segment_start != ref_end + 2 or int(input_ids[ref_end + 1]) != self.newline_id:
+            raise ValueError("The object reference and temporal segment require one newline.")
+
+        segment = input_ids[segment_start : segment_start + 4]
+        start_time = self.time_id_to_index[int(segment[1])]
+        end_time = self.time_id_to_index[int(segment[2])]
+        if start_time > end_time:
+            raise ValueError("PTD temporal start must not exceed temporal end.")
+        sampled_frames = int(data["video_grid_thw"][0, 0])
+        if end_time > sampled_frames:
+            raise ValueError(
+                f"PTD uses <t{end_time}> but the video has {sampled_frames} frames."
+            )
+        add_block(ref_end_id, segment_start - 1, segment_start, segment)
+
+        cursor = segment_start + 4
+        if cursor >= input_ids.numel() or int(input_ids[cursor]) != self.newline_id:
+            raise ValueError("The PTD temporal segment must be followed by one newline.")
+        cursor += 1
+        first_box = cursor
+        for time_index in range(start_time, end_time + 1):
+            unit = input_ids[cursor : cursor + 7]
+            expected_time_id = self.time_index_to_id[time_index]
+            if unit.numel() != 7 or [int(unit[0]), int(unit[1]), int(unit[6])] != [
+                expected_time_id,
+                ids["<|box_start|>"],
+                ids["<|box_end|>"],
+            ]:
+                raise ValueError(f"Invalid PTD box record for <t{time_index}>.")
+            coordinates = [
+                self.coordinate_id_to_value.get(int(value)) for value in unit[2:6]
+            ]
+            if (
+                None in coordinates
+                or coordinates[0] >= coordinates[2]
+                or coordinates[1] >= coordinates[3]
+            ):
+                raise ValueError(
+                    f"Invalid PTD coordinates for <t{time_index}>: {coordinates}."
+                )
+            add_block(expected_time_id, cursor, first_box, unit[1:])
+            cursor += 7
+            if time_index < end_time:
+                if cursor >= input_ids.numel() or int(input_ids[cursor]) != self.newline_id:
+                    raise ValueError("PTD box records must be separated by one newline.")
+                cursor += 1
+
+        if cursor >= input_ids.numel() or int(input_ids[cursor]) != ids[DEFAULT_IM_END_TOKEN]:
+            raise ValueError(
+                f"The final PTD box must be followed by {DEFAULT_IM_END_TOKEN}."
+            )
+        trailing = input_ids[cursor + 1 :]
+        if trailing.numel() and not bool(trailing.eq(self.newline_id).all()):
+            raise ValueError("Only newlines may follow the assistant end token.")
+
+        prefix_length = input_ids.numel()
+        block_inputs = torch.cat(blocks)
+        block_targets = torch.cat(targets)
+        block_positions = torch.cat(positions)
+        block_context_limits = torch.cat(context_limits)
+        pad_id = self.processor.tokenizer.pad_token_id
+        if pad_id is None:
+            raise ValueError("PTD requires a tokenizer pad token.")
+
+        data["input_ids"] = torch.cat(
+            [input_ids, block_inputs, input_ids.new_tensor([pad_id])]
+        )
+        data["labels"] = torch.cat(
+            [labels, labels.new_tensor([IGNORE_INDEX]), block_targets]
+        )
+        data["mm_token_type_ids"] = torch.cat(
+            [
+                data["mm_token_type_ids"],
+                torch.zeros(block_inputs.numel() + 1, dtype=torch.long),
+            ]
+        )
+        data["attention_mask"] = data["input_ids"].ne(pad_id).long()
+        data["ptd_position_ids"] = torch.cat(
+            [
+                torch.arange(prefix_length),
+                block_positions,
+                block_positions[-1:].add(1),
+            ]
+        )
+        data["ptd_context_limits"] = torch.cat(
+            [
+                torch.zeros(prefix_length, dtype=torch.long),
+                block_context_limits,
+                torch.zeros(1, dtype=torch.long),
+            ]
+        )
+        data["ptd_prefix_length"] = torch.tensor(prefix_length, dtype=torch.long)
+        return data
 
 class DataCollatorForSupervisedDataset(object):
     """Collate examples for supervised fine-tuning."""
@@ -319,6 +535,9 @@ class DataCollatorForSupervisedDataset(object):
         batch_image_thw = []
         batch_second_per_grid_ts = []
         batch_mm_token_type_ids = []
+        batch_ptd_position_ids = []
+        batch_ptd_context_limits = []
+        batch_ptd_prefix_lengths = []
 
         for example in examples:
             keys = example.keys()
@@ -332,6 +551,9 @@ class DataCollatorForSupervisedDataset(object):
             batch_input_ids.append(example["input_ids"])
             batch_label_ids.append(example["labels"])
             batch_mm_token_type_ids.append(example["mm_token_type_ids"])
+            batch_ptd_position_ids.append(example["ptd_position_ids"])
+            batch_ptd_context_limits.append(example["ptd_context_limits"])
+            batch_ptd_prefix_lengths.append(example["ptd_prefix_length"])
 
             if "second_per_grid_ts" in keys:
                 batch_second_per_grid_ts.extend(example["second_per_grid_ts"])
@@ -349,6 +571,13 @@ class DataCollatorForSupervisedDataset(object):
             'labels': labels,
             'attention_mask': attention_mask,
             'mm_token_type_ids': mm_token_type_ids,
+            'ptd_position_ids': pad_sequence(
+                batch_ptd_position_ids, padding_side='right', padding_value=0
+            ),
+            'ptd_context_limits': pad_sequence(
+                batch_ptd_context_limits, padding_side='right', padding_value=0
+            ),
+            'ptd_prefix_lengths': torch.stack(batch_ptd_prefix_lengths),
         }
 
         if len(batch_pixel_values) > 0:

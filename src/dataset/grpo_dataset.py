@@ -21,11 +21,12 @@ from .data_utils import (
     get_video_info,
     llava_to_openai,
     model_supports_optional_reasoning,
+    resolve_video_spec,
     use_default_system_message,
 )
 
 class GRPODataset(Dataset):
-    """Dataset for DPO training"""
+    """Dataset for PTD GRPO training."""
 
     def __init__(
         self,
@@ -40,6 +41,8 @@ class GRPODataset(Dataset):
             list_data_dict = json.load(open(data_path, "r"))
         else:
             list_data_dict = data_path
+        if not isinstance(list_data_dict, list):
+            raise ValueError("A PTD GRPO annotation must be a JSON list.")
 
         self.model_id = model_id
         self.processor = processor
@@ -77,6 +80,16 @@ class GRPODataset(Dataset):
     def __getitem__(self, i) -> Dict[str, torch.Tensor]:
         sources = self.list_data_dict[i]
 
+        conversations = sources.get("conversations")
+        if "video" not in sources or "image" in sources:
+            raise ValueError("A PTD GRPO sample must contain one video.")
+        if not isinstance(conversations, list) or len(conversations) != 2:
+            raise ValueError("A PTD GRPO sample must contain one user/assistant pair.")
+        if conversations[0].get("from") != "human" or conversations[1].get("from") != "gpt":
+            raise ValueError("PTD conversation roles must be human followed by gpt.")
+        if conversations[0].get("value", "").count("<video>") != 1:
+            raise ValueError("A PTD prompt must contain one <video> token.")
+
         is_video = False
 
         if "image" in sources:
@@ -110,14 +123,14 @@ class GRPODataset(Dataset):
             video_files = sources["video"]
             video_folder = self.data_args.image_folder
 
-            if isinstance(video_files, str):
+            if isinstance(video_files, (str, dict)):
                 video_files = [video_files]
+            if len(video_files) != 1:
+                raise ValueError("A PTD GRPO sample must contain one video.")
 
             videos = []
             for video_file in video_files:
-                if not os.path.exists(video_file):
-                    if not video_file.startswith("http"):
-                        video_file = os.path.join(video_folder, video_file)
+                video_file = resolve_video_spec(video_file, video_folder)
                 video_input, video_kwargs = get_video_info(
                     video_file, 
                     self.video_min_pixel, 
@@ -126,7 +139,10 @@ class GRPODataset(Dataset):
                     self.video_resized_h, 
                     self.data_args.fps,
                     self.image_patch_size,
-                    return_video_metadata=self.return_video_metadata
+                    max_frames=self.data_args.max_frames,
+                    return_video_metadata=self.return_video_metadata,
+                    nframes=self.data_args.nframes,
+                    temporal_patch_size=self.data_args.temporal_patch_size,
                 )
                 videos.append(video_input)
         else:
@@ -180,7 +196,7 @@ class GRPODataset(Dataset):
         return data_dict
     
 def make_grpo_data_module(model_id, processor, data_args):
-    """Make dataset and collator for supervised fine-tuning."""
+    """Build the PTD GRPO dataset without selecting or filtering samples."""
     grpo_dataset = GRPODataset(
         data_path=data_args.data_path, processor=processor, data_args=data_args, model_id=model_id
     )

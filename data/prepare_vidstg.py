@@ -40,12 +40,15 @@ def normalize_box(box, width, height):
     y1, y2 = max(0.0, y1), min(height, y2)
     if not 0 <= x1 < x2 <= width or not 0 <= y1 < y2 <= height:
         return None
-    return [
+    normalized = [
         round(x1 / width * 1000),
         round(y1 / height * 1000),
         round(x2 / width * 1000),
         round(y2 / height * 1000),
     ]
+    if normalized[0] >= normalized[2] or normalized[1] >= normalized[3]:
+        return None
+    return normalized
 
 
 def build_record(video, caption, boxes):

@@ -9,10 +9,13 @@ from transformers import (
     HfArgumentParser, 
 )
 from model.load_model import get_qwen_vl_generation_backbone, load_qwen_vl_generation_model
+from model.ptd_generation import build_ptd_token_ids, configure_ptd_model
 
 from trainer import QwenGRPOTrainer
 from dataset import make_grpo_data_module
+from dataset.data_utils import patch_processor_with_time_tokens, patch_qwen3_video_processor
 from params import DataArguments, ModelArguments, GRPOArguments
+from train.train_sft import PTD_TIME_TOKENS, train_ptd_token_rows
 from train.train_utils import get_peft_state_maybe_zero_3, get_peft_state_non_lora_maybe_zero_3, safe_save_model_for_hf_trainer
 from utils import load_reward_funcs
 
@@ -92,6 +95,22 @@ def train():
 
     if data_args.nframes is not None and data_args.fps is not None:
         raise ValueError("You cannot set both `nframes` and `fps` at the same time. Please set only one of them.")
+    if data_args.fps != 2:
+        raise ValueError("PTD GRPO uses 2 FPS.")
+    if data_args.max_frames != 64:
+        raise ValueError("PTD GRPO uses at most 64 sampled frames.")
+    if data_args.temporal_patch_size != 1:
+        raise ValueError("PTD GRPO uses one logical frame per temporal patch.")
+    if not training_args.disable_flash_attn2:
+        raise ValueError("PTD GRPO requires SDPA attention.")
+    if training_args.use_vllm:
+        raise ValueError("PTD GRPO requires local model rollouts.")
+    if not training_args.lora_enable:
+        raise ValueError("PTD GRPO requires LoRA training.")
+    if training_args.bits != 16:
+        raise ValueError("PTD GRPO requires 16-bit model weights.")
+    if training_args.weight_decay != 0:
+        raise ValueError("PTD token-row training requires zero weight decay.")
 
     if training_args.lora_enable and not training_args.freeze_llm:
         raise ValueError("If `lora_enable` is True, `freeze_llm` must also be True.")
@@ -111,6 +130,7 @@ def train():
 
         if not training_args.vision_lora:
             training_args.lora_namespan_exclude += ["visual"]
+        training_args.lora_namespan_exclude += ["embed_tokens", "lm_head"]
 
     local_rank = training_args.local_rank
     compute_dtype = (torch.float16 if training_args.fp16 else (torch.bfloat16 if training_args.bf16 else torch.float32))
@@ -137,7 +157,10 @@ def train():
         attn_implementation="sdpa" if training_args.disable_flash_attn2 else "flash_attention_2",
         **bnb_model_from_pretrained_args,
     )
+    if model.config.model_type != "qwen3_vl":
+        raise ValueError("PTD GRPO requires a Qwen3-VL model.")
     model.config.use_cache = False
+    configure_ptd_model(model)
     model_to_configure = model
     configure_llm(model_to_configure, training_args)
     configure_vision_tower(model_to_configure, training_args, compute_dtype, training_args.device)
@@ -179,6 +202,17 @@ def train():
                 model.to(torch.float16)
 
     processor = AutoProcessor.from_pretrained(model_args.model_id)
+    ptd_tokens = build_ptd_token_ids(
+        processor.tokenizer,
+        max_time_tokens=PTD_TIME_TOKENS,
+    )
+    if model.get_input_embeddings().num_embeddings != len(processor.tokenizer):
+        raise ValueError("PTD GRPO must start from a merged PTD SFT checkpoint.")
+    patch_qwen3_video_processor(processor)
+    patch_processor_with_time_tokens(
+        processor,
+        max_time_tokens=PTD_TIME_TOKENS,
+    )
     processor.image_processor.do_resize = False
 
     if training_args.bits in [4, 8]:
@@ -199,7 +233,16 @@ def train():
                                               processor=processor,
                                               data_args=data_args)
 
-    reward_funcs = load_reward_funcs("train.reward_funcs")
+    available_rewards = {
+        reward.__name__: reward for reward in load_reward_funcs("train.reward_funcs")
+    }
+    reward_funcs = [
+        available_rewards[name]
+        for name in ("temporal_iou_reward", "spatial_reward")
+        if name in available_rewards
+    ]
+    if len(reward_funcs) != 2:
+        raise ValueError("PTD GRPO requires temporal_iou_reward and spatial_reward.")
     if not hasattr(model, "warnings_issued"):
         model.warnings_issued = {}
 
@@ -211,7 +254,20 @@ def train():
         reward_funcs=reward_funcs,
         args=training_args,
         peft_config=peft_config,
+        ptd_generation_config={
+            "block_size": 6,
+            "max_time_tokens": 64,
+        },
     )
+    trainable_ptd_tokens = [
+        ptd_tokens["null"],
+        ptd_tokens["text_mask"],
+        ptd_tokens["time_start"],
+        ptd_tokens["time_end"],
+        *ptd_tokens["coord_id_to_value"],
+        *ptd_tokens["ordered_time_tokens"],
+    ]
+    train_ptd_token_rows(trainer.model, trainable_ptd_tokens)
 
     if list(pathlib.Path(training_args.output_dir).glob("checkpoint-*")):
         trainer.train(resume_from_checkpoint=True)
@@ -220,20 +276,21 @@ def train():
 
     trainer.save_state()
 
-    model.config.use_cache = True
+    trained_model = trainer.model
+    trained_model.config.use_cache = True
     
     if training_args.lora_enable:
         state_dict = get_peft_state_maybe_zero_3(
-            model.named_parameters(), training_args.lora_bias
+            trained_model.named_parameters(), training_args.lora_bias
         )
 
         non_lora_state_dict = get_peft_state_non_lora_maybe_zero_3(
-            model.named_parameters(), require_grad_only=False
+            trained_model.named_parameters(), require_grad_only=True
         )
 
         if local_rank == 0 or local_rank == -1:
-            model.config.save_pretrained(training_args.output_dir)
-            model.save_pretrained(training_args.output_dir, state_dict=state_dict)
+            trained_model.config.save_pretrained(training_args.output_dir)
+            trained_model.save_pretrained(training_args.output_dir, state_dict=state_dict)
             processor.save_pretrained(training_args.output_dir)
             torch.save(non_lora_state_dict, os.path.join(training_args.output_dir, "non_lora_state_dict.bin"))
     else:

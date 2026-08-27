@@ -12,11 +12,11 @@ PROMPT = (
     "the object reference, event time segment, and per-time bbox coordinates."
 )
 _SEGMENT = re.compile(
-    r"<\|time_start\|>\s*<t(?P<start>\d+)\|?>\s*"
-    r"<t(?P<end>\d+)\|?>\s*<\|time_end\|>"
+    r"<\|time_start\|>\s*<t(?P<start>\d+)>\s*"
+    r"<t(?P<end>\d+)>\s*<\|time_end\|>"
 )
 _BOX = re.compile(
-    r"<t(?P<time>\d+)\|?>\s*<\|box_start\|>\s*"
+    r"<t(?P<time>\d+)>\s*<\|box_start\|>\s*"
     r"<(?P<x1>\d+)>\s*<(?P<y1>\d+)>\s*"
     r"<(?P<x2>\d+)>\s*<(?P<y2>\d+)>\s*<\|box_end\|>"
 )
@@ -49,9 +49,10 @@ def doc_to_answer(doc):
 
 
 def _segment(text):
-    match = _SEGMENT.search(str(text or ""))
-    if match is None:
+    matches = list(_SEGMENT.finditer(str(text or "")))
+    if len(matches) != 1:
         return None
+    match = matches[0]
     start, end = int(match.group("start")), int(match.group("end"))
     if start <= 0 or end < start:
         return None
@@ -68,10 +69,15 @@ def _predicted_boxes(text):
     boxes = {}
     for match in _BOX.finditer(str(text or "")):
         time_index = int(match.group("time"))
-        if time_index > 0 and time_index not in boxes:
-            boxes[time_index] = [
-                int(match.group(name)) for name in ("x1", "y1", "x2", "y2")
-            ]
+        box = [int(match.group(name)) for name in ("x1", "y1", "x2", "y2")]
+        if (
+            time_index <= 0
+            or time_index in boxes
+            or not 0 <= box[0] < box[2] <= 1000
+            or not 0 <= box[1] < box[3] <= 1000
+        ):
+            return None
+        boxes[time_index] = box
     return boxes
 
 
@@ -115,6 +121,8 @@ def _ious(doc, prediction):
         if ground_truth_segment is not None and predicted_segment is not None
         else 0.0
     )
+    if predicted is None:
+        return temporal_iou, 0.0
     time_indices = set(ground_truth) | set(predicted)
     video_iou = 0.0
     if time_indices:

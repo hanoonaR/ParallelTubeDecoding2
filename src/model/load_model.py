@@ -16,7 +16,7 @@ from train.monkey_patch_forward import (
     replace_qwen3_5_moe_with_mixed_modality_forward,
     replace_qwen3_5_with_mixed_modality_forward,
     replace_qwen3_vl_moe_with_mixed_modality_forward,
-    replace_qwen3_with_mixed_modality_forward,
+    replace_qwen3_with_ptd_forward,
     replace_qwen_2_with_mixed_modality_forward,
 )
 from train.monkey_patch_vision import replace_qwen2_5_vision
@@ -38,7 +38,7 @@ _PATCHERS = {
     ),
     "qwen3_5": (replace_qwen3_5_with_mixed_modality_forward,),
     "qwen3_5_moe": (replace_qwen3_5_moe_with_mixed_modality_forward,),
-    "qwen3_vl": (replace_qwen3_with_mixed_modality_forward,),
+    "qwen3_vl": (replace_qwen3_with_ptd_forward,),
     "qwen3_vl_moe": (replace_qwen3_vl_moe_with_mixed_modality_forward,),
 }
 

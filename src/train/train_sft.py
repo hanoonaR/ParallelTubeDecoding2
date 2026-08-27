@@ -3,6 +3,7 @@ import torch
 from peft import LoraConfig, get_peft_model
 import ast
 from transformers import (
+    AddedToken,
     AutoProcessor,
     BitsAndBytesConfig, 
     HfArgumentParser, 
@@ -10,11 +11,100 @@ from transformers import (
 from model.load_model import get_qwen_vl_generation_backbone, load_qwen_vl_generation_model
 from trainer import QwenSFTTrainer
 from dataset import make_supervised_data_module
+from dataset.data_utils import patch_processor_with_time_tokens, patch_qwen3_video_processor
 from params import DataArguments, ModelArguments, TrainingArguments
+from train.monkey_patch_forward import replace_qwen3_with_ptd_forward
 from train.train_utils import get_peft_state_maybe_zero_3, get_peft_state_non_lora_maybe_zero_3, safe_save_model_for_hf_trainer
 import pathlib
 
 local_rank = None
+
+PTD_TIME_TOKENS = 100
+
+
+@torch.no_grad()
+def add_ptd_tokens(model, tokenizer):
+    """Add PTD localization tokens and initialize only newly created rows."""
+    structural = ["<null>", "<text_mask>", "<|time_start|>", "<|time_end|>"]
+    coordinates = [f"<{value}>" for value in range(1001)]
+    times = [f"<t{index}>" for index in range(1, PTD_TIME_TOKENS + 1)]
+    old_vocab_size = len(tokenizer)
+    tokenizer.add_tokens(
+        [AddedToken(token, normalized=False, special=True) for token in structural],
+        special_tokens=True,
+    )
+    tokenizer.add_tokens(
+        [
+            AddedToken(token, normalized=False, special=False)
+            for token in coordinates + times
+        ],
+        special_tokens=False,
+    )
+
+    if len(tokenizer) > old_vocab_size:
+        model.resize_token_embeddings(len(tokenizer))
+        input_weight = model.get_input_embeddings().weight
+        output_embeddings = model.get_output_embeddings()
+        output_weight = None if output_embeddings is None else output_embeddings.weight
+        initialization_text = {
+            "<null>": "null",
+            "<text_mask>": "text mask",
+            "<|time_start|>": "time start",
+            "<|time_end|>": "time end",
+        }
+        initialization_text.update({token: token[1:-1] for token in coordinates})
+        initialization_text.update(
+            {token: f"time {index}" for index, token in enumerate(times, start=1)}
+        )
+        for token, text in initialization_text.items():
+            token_id = tokenizer.convert_tokens_to_ids(token)
+            if token_id < old_vocab_size:
+                continue
+            source_ids = tokenizer.encode(text, add_special_tokens=False)
+            if not source_ids:
+                raise ValueError(f"Cannot initialize PTD token {token}.")
+            input_weight[token_id] = input_weight[source_ids].float().mean(dim=0).to(
+                input_weight.dtype
+            )
+            if output_weight is not None and output_weight.data_ptr() != input_weight.data_ptr():
+                output_weight[token_id] = output_weight[source_ids].float().mean(dim=0).to(
+                    output_weight.dtype
+                )
+
+    token_ids = []
+    for token in structural + coordinates + times:
+        token_id = tokenizer.convert_tokens_to_ids(token)
+        if (
+            token_id is None
+            or token_id == tokenizer.unk_token_id
+            or tokenizer.encode(token, add_special_tokens=False) != [token_id]
+        ):
+            raise ValueError(f"PTD token {token} must encode as one token.")
+        token_ids.append(token_id)
+    return token_ids
+
+
+def train_ptd_token_rows(model, token_ids):
+    """Train PTD vocabulary rows while leaving the original vocabulary frozen."""
+    selected = torch.tensor(sorted(set(token_ids)), dtype=torch.long)
+
+    def enable(weight):
+        weight.requires_grad = True
+
+        def mask_gradient(gradient):
+            row_mask = torch.zeros(
+                gradient.shape[0], dtype=torch.bool, device=gradient.device
+            )
+            row_mask[selected.to(gradient.device)] = True
+            return gradient * row_mask.view(-1, 1)
+
+        weight.register_hook(mask_gradient)
+
+    input_weight = model.get_input_embeddings().weight
+    enable(input_weight)
+    output_embeddings = model.get_output_embeddings()
+    if output_embeddings is not None and output_embeddings.weight.data_ptr() != input_weight.data_ptr():
+        enable(output_embeddings.weight)
 
 def rank0_print(*args):
     if local_rank == 0 or local_rank == '0' or local_rank is None:
@@ -89,6 +179,20 @@ def train():
     
     if data_args.nframes is not None and data_args.fps is not None:
         raise ValueError("You cannot set both `nframes` and `fps` at the same time. Please set only one of them.")
+    if data_args.fps != 2:
+        raise ValueError("PTD SFT uses 2 FPS.")
+    if data_args.max_frames != 64:
+        raise ValueError("PTD SFT uses at most 64 sampled frames.")
+    if data_args.temporal_patch_size != 1:
+        raise ValueError("PTD SFT uses one logical frame per temporal patch.")
+    if not training_args.disable_flash_attn2:
+        raise ValueError("PTD SFT requires SDPA attention.")
+    if not training_args.lora_enable:
+        raise ValueError("PTD SFT requires LoRA training.")
+    if training_args.bits != 16:
+        raise ValueError("PTD SFT requires 16-bit model weights.")
+    if training_args.weight_decay != 0:
+        raise ValueError("PTD token-row training requires zero weight decay.")
 
     if training_args.lora_enable and not training_args.freeze_llm:
         raise ValueError("If `lora_enable` is True, `freeze_llm` must also be True.")
@@ -108,6 +212,7 @@ def train():
 
         if not training_args.vision_lora:
             training_args.lora_namespan_exclude += ["visual"]
+        training_args.lora_namespan_exclude += ["embed_tokens", "lm_head"]
 
     local_rank = training_args.local_rank
     compute_dtype = (torch.float16 if training_args.fp16 else (torch.bfloat16 if training_args.bf16 else torch.float32))
@@ -128,14 +233,21 @@ def train():
             )
         ))
 
+    replace_qwen3_with_ptd_forward()
     model = load_qwen_vl_generation_model(
         model_args.model_id,
         dtype=compute_dtype,
         attn_implementation="sdpa" if training_args.disable_flash_attn2 else "flash_attention_2",
         **bnb_model_from_pretrained_args,
     )
+    if model.config.model_type != "qwen3_vl":
+        raise ValueError("PTD SFT requires a Qwen3-VL model.")
 
     model.config.use_cache = False
+    processor = AutoProcessor.from_pretrained(model_args.model_id)
+    ptd_token_ids = add_ptd_tokens(model, processor.tokenizer)
+    patch_qwen3_video_processor(processor)
+    patch_processor_with_time_tokens(processor, max_time_tokens=PTD_TIME_TOKENS)
     model_to_configure = model
     configure_llm(model_to_configure, training_args)
     configure_vision_tower(model_to_configure, training_args, compute_dtype, training_args.device)
@@ -175,6 +287,7 @@ def train():
                 model.to(torch.float16)
         rank0_print("Adding LoRA to the model...")
         model = get_peft_model(model, peft_config)
+        train_ptd_token_rows(model, ptd_token_ids)
 
         # Peft maodel makes vision tower and merger freezed again.
         # Configuring fuction could be called here, but sometimes it does not work properly.
@@ -190,8 +303,6 @@ def train():
             for name, param in model.named_parameters():
                 if "merger" in name:
                     param.requires_grad = True
-
-    processor = AutoProcessor.from_pretrained(model_args.model_id)
 
     # model.config.tokenizer_model_max_length = processor.tokenizer.model_max_length
 

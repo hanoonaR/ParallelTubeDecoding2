@@ -13,8 +13,8 @@ PROMPT = (
     "reference followed by the event time segment."
 )
 _SEGMENT = re.compile(
-    r"<\|time_start\|>\s*<t(?P<start>\d+)\|?>\s*"
-    r"<t(?P<end>\d+)\|?>\s*<\|time_end\|>"
+    r"<\|time_start\|>\s*<t(?P<start>\d+)>\s*"
+    r"<t(?P<end>\d+)>\s*<\|time_end\|>"
 )
 
 
@@ -47,9 +47,10 @@ def doc_to_answer(doc):
 
 
 def _segment(text):
-    match = _SEGMENT.search(str(text or ""))
-    if match is None:
+    matches = list(_SEGMENT.finditer(str(text or "")))
+    if len(matches) != 1:
         return None
+    match = matches[0]
     start, end = int(match.group("start")), int(match.group("end"))
     if start <= 0 or end < start:
         return None

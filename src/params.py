@@ -305,8 +305,10 @@ class DataArguments:
     image_resized_height: int = field(default=None)
     video_resized_width: int = field(default=None)
     video_resized_height: int = field(default=None)
-    fps: Optional[int] = field(default=None, metadata={"help": "Frames per second for video data."})
+    fps: Optional[float] = field(default=None, metadata={"help": "Frames per second for video data."})
     nframes: Optional[int] = field(default=None, metadata={"help": "Number of frames for video data."})
+    max_frames: int = field(default=64, metadata={"help": "Maximum sampled video frames."})
+    temporal_patch_size: int = field(default=1, metadata={"help": "Logical frames per temporal patch."})
     enable_reasoning: bool = field(
         default=False,
         metadata={"help": "Enable reasoning-field parsing and model-specific <think> prompt formatting when supported."},

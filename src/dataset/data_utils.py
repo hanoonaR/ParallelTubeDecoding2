@@ -1,6 +1,9 @@
+import os
 import re
-import torch
 from functools import lru_cache
+from types import MethodType
+
+import torch
 
 from transformers import AutoConfig
 
@@ -174,16 +177,68 @@ def get_image_info(image_path, min_pixel, max_pixel, width, height, image_patch_
 
     return image_input[0]
 
-def get_video_info(video_path, min_pixels, max_pixels, width, height, fps, image_patch_size, return_video_metadata=False):
+def resolve_video_spec(video, video_folder=None):
+    """Resolve a video path while preserving optional start/end times."""
+    is_dict = isinstance(video, dict)
+    if is_dict:
+        video = dict(video)
+        path = video.get("video")
+        if path is None:
+            raise ValueError("A video dictionary must contain a 'video' path.")
+    elif isinstance(video, str):
+        path = video
+    else:
+        raise TypeError("A video entry must be a path string or dictionary.")
+
+    path = str(path)
+    if not os.path.exists(path) and not path.startswith(("http://", "https://")):
+        if video_folder is None:
+            raise ValueError(f"Relative video path {path!r} requires --image_folder.")
+        path = os.path.join(video_folder, path)
+
+    if is_dict:
+        video["video"] = path
+        return video
+    return path
+
+
+def get_video_info(
+    video,
+    min_pixels,
+    max_pixels,
+    width,
+    height,
+    fps,
+    image_patch_size,
+    max_frames=64,
+    return_video_metadata=False,
+    nframes=None,
+    temporal_patch_size=1,
+):
     # Using this because of process_vision_info function
     # Need to fix this in the future
+    if fps is not None and nframes is not None:
+        raise ValueError("Only one of fps and nframes may be set.")
+
+    video_options = dict(video) if isinstance(video, dict) else {}
     content = {
-        "type": "video", 
-        "video": video_path,
+        "type": "video",
+        "video": video_options.pop("video", video),
         "min_pixels": min_pixels,
         "max_pixels": max_pixels,
-        "fps": fps
     }
+    content.update(video_options)
+
+    sample_fps = content.pop("fps", fps)
+    sample_frames = content.pop("nframes", nframes)
+    if sample_fps is not None and sample_frames is not None:
+        raise ValueError("A video cannot specify both fps and nframes.")
+    if sample_frames is not None:
+        content["nframes"] = sample_frames
+    elif sample_fps is not None:
+        content["fps"] = sample_fps
+        content["max_frames"] = content.get("max_frames", max_frames)
+    content["temporal_patch_size"] = temporal_patch_size
 
     if width is not None and height is not None:
         content["resized_width"] = width
@@ -204,6 +259,72 @@ def get_video_info(video_path, min_pixels, max_pixels, width, height, fps, image
     )
 
     return video_input[0], video_kwargs
+
+
+def patch_qwen3_video_processor(processor):
+    """Keep Qwen's temporal kernel while creating one visual token per frame."""
+    video_processor = getattr(processor, "video_processor", None)
+    if video_processor is None or video_processor.__class__.__name__ != "Qwen3VLVideoProcessor":
+        raise TypeError("PTD requires a Qwen3-VL processor.")
+    if getattr(video_processor, "_ptd_patched", False):
+        return processor
+
+    temporal_width = int(video_processor.temporal_patch_size)
+    original_preprocess = video_processor._preprocess
+
+    def preprocess(self, videos, *args, **kwargs):
+        videos = [video.repeat_interleave(temporal_width, dim=0) for video in videos]
+        kwargs["temporal_patch_size"] = temporal_width
+        return original_preprocess(videos, *args, **kwargs)
+
+    video_processor._preprocess = MethodType(preprocess, video_processor)
+    video_processor.frame_factor = 1
+    video_processor.max_frames = 64
+    video_processor._ptd_patched = True
+    return processor
+
+
+def patch_processor_with_time_tokens(processor, max_time_tokens=100):
+    """Place one learned time token before each sampled video frame."""
+    if max_time_tokens <= 0:
+        raise ValueError("max_time_tokens must be positive.")
+    if not hasattr(processor, "replace_video_token"):
+        raise TypeError("PTD requires a Qwen3-VL processor.")
+
+    tokenizer = processor.tokenizer
+    for token in ("<t1>", f"<t{max_time_tokens}>"):
+        token_id = tokenizer.convert_tokens_to_ids(token)
+        if token_id is None or token_id == tokenizer.unk_token_id:
+            raise ValueError(f"Missing PTD time token {token}.")
+        if tokenizer.encode(token, add_special_tokens=False) != [token_id]:
+            raise ValueError(f"PTD time token {token} must encode as one token.")
+
+    def replace_video_token(self, *args, **kwargs):
+        video_inputs = kwargs.get("video_inputs", args[0] if args else None)
+        video_index = kwargs.get("video_idx", args[1] if len(args) > 1 else None)
+        if video_inputs is None or video_index is None:
+            raise TypeError("Video inputs and video index are required.")
+
+        grid = video_inputs["video_grid_thw"][int(video_index)]
+        frame_count = int(grid[0])
+        if frame_count > max_time_tokens:
+            raise ValueError(
+                f"PTD received {frame_count} frames but has only "
+                f"{max_time_tokens} time tokens."
+            )
+        tokens_per_frame = int(grid[1] * grid[2]) // int(
+            self.video_processor.merge_size ** 2
+        )
+        return "".join(
+            f"<t{frame + 1}>"
+            + self.vision_start_token
+            + self.video_token * tokens_per_frame
+            + self.vision_end_token
+            for frame in range(frame_count)
+        )
+
+    processor.replace_video_token = MethodType(replace_video_token, processor)
+    return processor
 
 def samples_per_class_from_ids(label_ids, num_classes):
     

@@ -47,6 +47,7 @@ from trl.trainer.utils import (
 )
 from trl.extras.profiling import profiling_decorator
 from accelerate.utils import gather_object, is_peft_model
+from model.ptd_generation import configure_ptd_model, generate_ptd, make_ptd_replay_inputs
 from train.train_utils import get_peft_state_non_lora_maybe_zero_3
 
 
@@ -127,6 +128,7 @@ def _ensure_mm_token_type_ids_generate_compat(model):
 
 class QwenGRPOTrainer(GRPOTrainer):
     def __init__(self, *args, **kwargs):
+        ptd_generation_config = kwargs.pop("ptd_generation_config", None) or {}
         super(QwenGRPOTrainer, self).__init__(*args, **kwargs)
         # Override data_collator to prevent any data processing
         self.data_collator = _identity_collator
@@ -134,6 +136,26 @@ class QwenGRPOTrainer(GRPOTrainer):
         _ensure_mm_token_type_ids_generate_compat(getattr(self, "model_wrapped", None))
         _ensure_mm_token_type_ids_generate_compat(getattr(self, "ref_model", None))
         self._apply_liger_grpo_loss_type_override()
+        self.ptd_generation_config = {
+            "block_size": 6,
+            "max_time_tokens": 64,
+            **ptd_generation_config,
+        }
+        if self.use_vllm:
+            raise ValueError("PTD GRPO requires local model rollouts.")
+        if self.use_liger_kernel:
+            raise ValueError("PTD replay requires the standard GRPO loss path.")
+        if self.args.per_device_train_batch_size != 1:
+            raise ValueError("PTD GRPO requires per-device batch size 1.")
+        configure_ptd_model(
+            self.model,
+            int(self.ptd_generation_config["block_size"]),
+        )
+        if self.ref_model is not None:
+            configure_ptd_model(
+                self.ref_model,
+                int(self.ptd_generation_config["block_size"]),
+            )
 
     def _apply_liger_grpo_loss_type_override(self) -> None:
         """If the user passed --liger_grpo_loss_type, swap the loss variant on
@@ -172,7 +194,7 @@ class QwenGRPOTrainer(GRPOTrainer):
         videos = getattr(self, '_current_videos', None)
         video_kwargs = getattr(self, '_current_video_kwargs', None)
 
-        model_id = getattr(self.model.config, "_name_or_path", "")
+        model_type = getattr(self.model.config, "model_type", "")
 
         # Build processor kwargs
         processor_kwargs = {
@@ -192,11 +214,11 @@ class QwenGRPOTrainer(GRPOTrainer):
 
         # Add videos if available
         if videos is not None:
-            if "Qwen2.5" in model_id:
+            if model_type == "qwen2_5_vl":
                 processor_kwargs["videos"] = videos
                 if video_kwargs and video_kwargs[0] is not None:
                     processor_kwargs.update(video_kwargs[0])
-            elif "Qwen3" in model_id:
+            elif model_type in {"qwen3_vl", "qwen3_vl_moe", "qwen3_5", "qwen3_5_moe"}:
                 batched_video_datas = []
                 batched_video_metadatas = []
                 for sample_videos in videos:
@@ -229,8 +251,26 @@ class QwenGRPOTrainer(GRPOTrainer):
             FSDP.summon_full_params(self.model_wrapped, recurse=False) if self.is_fsdp_enabled else nullcontext(),
         ):
             _ensure_mm_token_type_ids_generate_compat(unwrapped_model)
-            prompt_completion_ids = unwrapped_model.generate(
-                **generate_inputs, generation_config=self.generation_config, disable_compile=True
+            if generate_inputs["input_ids"].shape[0] != 1:
+                raise ValueError("PTD generation requires one prompt per rank.")
+            tokenizer = getattr(self.processing_class, "tokenizer", self.processing_class)
+            ptd_completion_ids, generation_result = generate_ptd(
+                unwrapped_model,
+                tokenizer,
+                dict(generate_inputs),
+                max_new_tokens=self.max_completion_length,
+                block_size=self.ptd_generation_config["block_size"],
+                max_time_tokens=self.ptd_generation_config["max_time_tokens"],
+                temperature=self.temperature,
+                top_p=self.args.top_p,
+                top_k=self.args.top_k,
+                return_trace=True,
+            )
+            if generation_result.trace is None:
+                raise RuntimeError("PTD rollout did not return a replay trace.")
+            self._last_ptd_trace = generation_result.trace
+            prompt_completion_ids = torch.cat(
+                [generate_inputs["input_ids"], ptd_completion_ids], dim=1
             )
 
         # Extract prompt and completion ids
@@ -249,6 +289,7 @@ class QwenGRPOTrainer(GRPOTrainer):
         completion_ids = [c[m].tolist() for c, m in zip(completion_ids, completion_mask.bool(), strict=True)]
 
         extra_fields = {}
+        extra_fields["ptd_trace"] = [self._last_ptd_trace]
         if "mm_token_type_ids" in generate_inputs:
             prompt_mm_token_type_ids = generate_inputs["mm_token_type_ids"]
             prompt_mm_token_type_ids = [
@@ -323,6 +364,7 @@ class QwenGRPOTrainer(GRPOTrainer):
         prompt_ids_list, completion_ids_list, num_items_in_batch, sampling_per_token_logps_list, extra_fields = (
             self._generate(prompts)
         )
+        ptd_traces = extra_fields.pop("ptd_trace", None)
 
         # Clear stored images/videos
         self._current_images = None
@@ -352,11 +394,32 @@ class QwenGRPOTrainer(GRPOTrainer):
         else:
             sampling_per_token_logps = None
 
+        is_truncated = None
         # If mask_truncated_completions is enabled, zero out truncated completions in completion_mask
         if self.mask_truncated_completions:
             eos_and_pad = [self.eos_token_id, self.pad_token_id]
             is_truncated = torch.tensor([ids[-1] not in eos_and_pad for ids in completion_ids_list], device=device)
             completion_mask = completion_mask * (~is_truncated).unsqueeze(1).int()
+
+        if ptd_traces is None or len(ptd_traces) != 1:
+            raise RuntimeError("PTD scoring requires one rollout trace per rank.")
+        tokenizer = getattr(self.processing_class, "tokenizer", self.processing_class)
+        text_mask_id = tokenizer.convert_tokens_to_ids("<text_mask>")
+        if text_mask_id is None or text_mask_id == getattr(tokenizer, "unk_token_id", None):
+            raise ValueError("PTD replay requires the <text_mask> tokenizer token.")
+        ptd_replay = make_ptd_replay_inputs(
+            ptd_traces[0],
+            {"text_mask": int(text_mask_id)},
+            block_size=self.ptd_generation_config["block_size"],
+        )
+        action_counts = ptd_replay["ptd_action_mask"].sum(dim=1)
+        if not bool(action_counts.gt(0).all().item()):
+            raise RuntimeError("PTD rollout produced no scored actions.")
+        if is_truncated is not None:
+            ptd_replay["ptd_action_mask"] *= (
+                ~is_truncated
+            ).unsqueeze(1).to(torch.long)
+        num_items_in_batch = self.accelerator.gather(action_counts).sum()
 
         # Concatenate prompt_mask with completion_mask for logit computation
         prompt_completion_ids = torch.cat([prompt_ids, completion_ids], dim=1)  # (B, P+C)
@@ -367,7 +430,7 @@ class QwenGRPOTrainer(GRPOTrainer):
 
         num_images = [len(img_list) for img_list in images] if images is not None else None
 
-        model_id = getattr(self.model.config, "_name_or_path", "")
+        model_type = getattr(self.model.config, "model_type", "")
 
         # Get forward_kwargs for models with multimodal inputs
         if images is not None or videos is not None:
@@ -382,13 +445,13 @@ class QwenGRPOTrainer(GRPOTrainer):
             if images is not None:
                 processor_kwargs["images"] = images
             if videos is not None:
-                if "Qwen2.5" in model_id:
+                if model_type == "qwen2_5_vl":
                     common_vk = video_kwargs[0] if isinstance(video_kwargs, list) else video_kwargs
                     processor_kwargs["videos"] = videos
                     if common_vk is not None:
                         processor_kwargs.update(common_vk)
 
-                elif "Qwen3" in model_id:
+                elif model_type in {"qwen3_vl", "qwen3_vl_moe", "qwen3_5", "qwen3_5_moe"}:
                     batched_video_datas = []
                     batched_video_metadatas = []
                     for sample_videos in videos:
@@ -419,15 +482,33 @@ class QwenGRPOTrainer(GRPOTrainer):
         else:
             forward_kwargs = {}
 
-        # If token_type_ids are used, extend them with zeros for the completion part
+        replay_extension_shape = ptd_replay["input_ids"][:, prompt_ids.shape[1] :].shape
+        # If token_type_ids are used, extend them with zeros for the replay suffix
         if "token_type_ids" in forward_kwargs:
             token_type_ids = forward_kwargs["token_type_ids"]
             forward_kwargs["token_type_ids"] = torch.cat(
-                [token_type_ids, token_type_ids.new_zeros(completion_ids.shape)], dim=1
+                [token_type_ids, token_type_ids.new_zeros(replay_extension_shape)], dim=1
             )
         if prompt_mm_token_type_ids is not None:
             forward_kwargs["mm_token_type_ids"] = torch.cat(
-                [prompt_mm_token_type_ids, prompt_mm_token_type_ids.new_zeros(completion_ids.shape)], dim=1
+                [
+                    prompt_mm_token_type_ids,
+                    prompt_mm_token_type_ids.new_zeros(replay_extension_shape),
+                ],
+                dim=1,
+            )
+
+        def score_ptd_actions(scoring_model, compute_entropy=False):
+            return self._get_ptd_action_logps_and_entropies(
+                scoring_model,
+                ptd_replay["input_ids"],
+                ptd_replay["attention_mask"],
+                ptd_replay["ptd_position_ids"],
+                ptd_replay["ptd_prefix_lengths"],
+                ptd_replay["ptd_context_limits"],
+                ptd_replay["ptd_target_ids"],
+                compute_entropy=compute_entropy,
+                **forward_kwargs,
             )
 
         with torch.no_grad():
@@ -442,15 +523,7 @@ class QwenGRPOTrainer(GRPOTrainer):
             if self.args.gradient_accumulation_steps % generate_every != 0 or (
                 self.use_vllm and self.vllm_importance_sampling_correction
             ):
-                old_per_token_logps, _ = self._get_per_token_logps_and_entropies(
-                    self.model,
-                    prompt_completion_ids,
-                    attention_mask,
-                    logits_to_keep,
-                    batch_size,
-                    num_images=num_images,
-                    **forward_kwargs,  # may contain pixel_values, image_grid_thw, pixel_attention_mask and image_sizes
-                )
+                old_per_token_logps, _ = score_ptd_actions(self.model)
             else:
                 old_per_token_logps = None
 
@@ -464,32 +537,20 @@ class QwenGRPOTrainer(GRPOTrainer):
             # Compute the per-token log probabilities for the reference model
             if self.beta != 0.0:
                 if self.ref_model is not None:
-                    ref_per_token_logps, _ = self._get_per_token_logps_and_entropies(
-                        self.ref_model,
-                        prompt_completion_ids,
-                        attention_mask,
-                        logits_to_keep,
-                        batch_size=batch_size,
-                        num_images=num_images,
-                        **forward_kwargs,  # may contain pixel_values, image_grid_thw, pixel_attention_mask and image_sizes
-                    )
+                    ref_per_token_logps, _ = score_ptd_actions(self.ref_model)
                 else:
                     with self.accelerator.unwrap_model(self.model).disable_adapter():
-                        ref_per_token_logps, _ = self._get_per_token_logps_and_entropies(
-                            self.model,
-                            prompt_completion_ids,
-                            attention_mask,
-                            logits_to_keep,
-                            batch_size=batch_size,
-                            num_images=num_images,
-                            **forward_kwargs,  # may contain pixel_values, image_grid_thw, pixel_attention_mask and image_sizes
-                        )
+                        ref_per_token_logps, _ = score_ptd_actions(self.model)
             else:
                 ref_per_token_logps = None
 
         # Decode
         prompts_text = self.processing_class.batch_decode(prompt_ids, skip_special_tokens=True)
         completions_text = self.processing_class.batch_decode(completion_ids, skip_special_tokens=True)
+        reward_completions_text = self.processing_class.batch_decode(
+            completion_ids_list,
+            skip_special_tokens=False,
+        )
         if is_conversational(inputs[0]):
             completions = []
             for prompt, completion in zip(prompts, completions_text, strict=True):
@@ -497,6 +558,9 @@ class QwenGRPOTrainer(GRPOTrainer):
                 completions.append([{"role": "assistant", "content": bootstrap + completion}])
         else:
             completions = completions_text
+
+        for sample, completion in zip(inputs, reward_completions_text, strict=True):
+            sample["ptd_completion"] = completion
 
         # Merge extra_fields from rollout_func into inputs for reward functions
         if extra_fields:
@@ -606,6 +670,17 @@ class QwenGRPOTrainer(GRPOTrainer):
             "advantages": advantages,
             "num_items_in_batch": num_items_in_batch,
         }
+        output.update(
+            {
+                "ptd_replay_input_ids": ptd_replay["input_ids"],
+                "ptd_replay_attention_mask": ptd_replay["attention_mask"],
+                "ptd_position_ids": ptd_replay["ptd_position_ids"],
+                "ptd_prefix_lengths": ptd_replay["ptd_prefix_lengths"],
+                "ptd_context_limits": ptd_replay["ptd_context_limits"],
+                "ptd_target_ids": ptd_replay["ptd_target_ids"],
+                "ptd_action_mask": ptd_replay["ptd_action_mask"],
+            }
+        )
         if old_per_token_logps is not None:
             output["old_per_token_logps"] = old_per_token_logps
         if self.use_vllm and self.vllm_importance_sampling_correction:
@@ -635,7 +710,76 @@ class QwenGRPOTrainer(GRPOTrainer):
         if images is not None:
             output["num_images"] = num_images
         return output
-    
+
+    @profiling_decorator
+    def _get_ptd_action_logps_and_entropies(
+        self,
+        model,
+        replay_input_ids,
+        replay_attention_mask,
+        ptd_position_ids,
+        ptd_prefix_lengths,
+        ptd_context_limits,
+        target_ids,
+        compute_entropy=False,
+        pixel_values=None,
+        image_grid_thw=None,
+        pixel_attention_mask=None,
+        image_sizes=None,
+        token_type_ids=None,
+        pixel_values_videos=None,
+        video_grid_thw=None,
+        second_per_grid_ts=None,
+        mm_token_type_ids=None,
+    ):
+        """Score sampled targets at their PTD probe positions."""
+        if replay_input_ids.shape[0] != 1:
+            raise ValueError("PTD replay requires batch size 1.")
+
+        num_probe_tokens = target_ids.shape[1]
+        prefix_length = int(ptd_prefix_lengths[0].item())
+        if replay_input_ids.shape[1] != prefix_length + num_probe_tokens:
+            raise ValueError("PTD replay must contain one target per probe position.")
+
+        model_inputs = {
+            "input_ids": replay_input_ids,
+            "attention_mask": replay_attention_mask,
+            "ptd_position_ids": ptd_position_ids,
+            "ptd_prefix_lengths": ptd_prefix_lengths,
+            "ptd_context_limits": ptd_context_limits,
+            "use_cache": False,
+            "return_dict": True,
+            "logits_to_keep": num_probe_tokens,
+        }
+        optional_inputs = {
+            "pixel_values": pixel_values,
+            "image_grid_thw": image_grid_thw,
+            "pixel_attention_mask": pixel_attention_mask,
+            "image_sizes": image_sizes,
+            "token_type_ids": token_type_ids,
+            "pixel_values_videos": pixel_values_videos,
+            "video_grid_thw": video_grid_thw,
+            "second_per_grid_ts": second_per_grid_ts,
+            "mm_token_type_ids": mm_token_type_ids,
+        }
+        model_inputs.update(
+            {name: value for name, value in optional_inputs.items() if value is not None}
+        )
+
+        logits = model(**model_inputs).logits
+        if logits.shape[1] == num_probe_tokens:
+            probe_logits = logits
+        elif logits.shape[1] == replay_input_ids.shape[1]:
+            probe_logits = logits[:, prefix_length:]
+        else:
+            raise RuntimeError("The model did not return logits for every PTD probe.")
+
+        probe_logits = probe_logits.float() / self.temperature
+        logps = selective_log_softmax(probe_logits, target_ids)
+        with torch.no_grad():
+            entropies = entropy_from_logits(probe_logits) if compute_entropy else None
+        return logps, entropies
+
     @profiling_decorator
     def _get_per_token_logps_and_entropies(
         self,
@@ -829,31 +973,56 @@ class QwenGRPOTrainer(GRPOTrainer):
 
     
     def _compute_loss(self, model, inputs):
-        # Compute the per-token log probabilities for the model
-        prompt_ids, prompt_mask = inputs["prompt_ids"], inputs["prompt_mask"]
-        completion_ids, completion_mask = inputs["completion_ids"], inputs["completion_mask"]
-        input_ids = torch.cat([prompt_ids, completion_ids], dim=1)
-        attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)
-        logits_to_keep = completion_ids.size(1)  # we only need to compute the logits for the completion tokens
+        if self.args.gradient_checkpointing and not self.args.vision_lora:
+            checkpoint_kwargs = {"use_reentrant": True}
+            self.args.gradient_checkpointing_kwargs = checkpoint_kwargs
+            self.model.gradient_checkpointing_enable(
+                gradient_checkpointing_kwargs=checkpoint_kwargs
+            )
 
-        # Compute the per_token_logps and the entropy at each position in the completion
-        per_token_logps, entropies = self._get_per_token_logps_and_entropies(
-            model,
-            input_ids,
-            attention_mask,
-            logits_to_keep,
-            compute_entropy=True,
-            pixel_values=inputs.get("pixel_values"),
-            image_grid_thw=inputs.get("image_grid_thw"),
-            num_images=inputs.get("num_images"),
-            pixel_attention_mask=inputs.get("pixel_attention_mask"),
-            image_sizes=inputs.get("image_sizes"),
-            token_type_ids=inputs.get("token_type_ids"),
-            pixel_values_videos=inputs.get("pixel_values_videos"),
-            video_grid_thw=inputs.get("video_grid_thw"),
-            second_per_grid_ts=inputs.get("second_per_grid_ts"),
-            mm_token_type_ids=inputs.get("mm_token_type_ids"),
-        )
+        if "ptd_replay_input_ids" in inputs:
+            completion_mask = inputs["ptd_action_mask"]
+            per_token_logps, entropies = self._get_ptd_action_logps_and_entropies(
+                model,
+                inputs["ptd_replay_input_ids"],
+                inputs["ptd_replay_attention_mask"],
+                inputs["ptd_position_ids"],
+                inputs["ptd_prefix_lengths"],
+                inputs["ptd_context_limits"],
+                inputs["ptd_target_ids"],
+                compute_entropy=True,
+                pixel_values=inputs.get("pixel_values"),
+                image_grid_thw=inputs.get("image_grid_thw"),
+                pixel_attention_mask=inputs.get("pixel_attention_mask"),
+                image_sizes=inputs.get("image_sizes"),
+                token_type_ids=inputs.get("token_type_ids"),
+                pixel_values_videos=inputs.get("pixel_values_videos"),
+                video_grid_thw=inputs.get("video_grid_thw"),
+                second_per_grid_ts=inputs.get("second_per_grid_ts"),
+                mm_token_type_ids=inputs.get("mm_token_type_ids"),
+            )
+        else:
+            prompt_ids, prompt_mask = inputs["prompt_ids"], inputs["prompt_mask"]
+            completion_ids, completion_mask = inputs["completion_ids"], inputs["completion_mask"]
+            input_ids = torch.cat([prompt_ids, completion_ids], dim=1)
+            attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)
+            per_token_logps, entropies = self._get_per_token_logps_and_entropies(
+                model,
+                input_ids,
+                attention_mask,
+                completion_ids.size(1),
+                compute_entropy=True,
+                pixel_values=inputs.get("pixel_values"),
+                image_grid_thw=inputs.get("image_grid_thw"),
+                num_images=inputs.get("num_images"),
+                pixel_attention_mask=inputs.get("pixel_attention_mask"),
+                image_sizes=inputs.get("image_sizes"),
+                token_type_ids=inputs.get("token_type_ids"),
+                pixel_values_videos=inputs.get("pixel_values_videos"),
+                video_grid_thw=inputs.get("video_grid_thw"),
+                second_per_grid_ts=inputs.get("second_per_grid_ts"),
+                mm_token_type_ids=inputs.get("mm_token_type_ids"),
+            )
 
         if self.top_entropy_quantile < 1.0:
             entropy_mask = self.get_high_entropy_mask(entropies, completion_mask, 1 - self.top_entropy_quantile)

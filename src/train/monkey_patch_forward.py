@@ -73,6 +73,9 @@ def replace_qwen2_5_with_mixed_modality_forward():
 def replace_qwen3_with_mixed_modality_forward():
     transformers.models.qwen3_vl.modeling_qwen3_vl.Qwen3VLModel.forward = qwen3_vl_mixed_modality_forward
 
+def replace_qwen3_with_ptd_forward():
+    transformers.models.qwen3_vl.modeling_qwen3_vl.Qwen3VLModel.forward = qwen3_vl_mixed_modality_forward
+
 def replace_qwen3_5_with_mixed_modality_forward():
     transformers.models.qwen3_5.modeling_qwen3_5.Qwen3_5Model.forward = qwen3_5_mixed_modality_forward
 
@@ -349,6 +352,9 @@ def qwen3_vl_mixed_modality_forward(
     mm_token_type_ids: Optional[torch.IntTensor] = None,
     cache_position: Optional[torch.LongTensor] = None,
     second_per_grid_ts: Optional[torch.Tensor] = None,
+    ptd_position_ids: Optional[torch.LongTensor] = None,
+    ptd_prefix_lengths: Optional[torch.LongTensor] = None,
+    ptd_context_limits: Optional[torch.LongTensor] = None,
     **kwargs: Unpack[TransformersKwargs],
 ) -> Union[tuple, Qwen3VLModelOutputWithPast]:
     r"""
@@ -435,10 +441,26 @@ def qwen3_vl_mixed_modality_forward(
             mm_token_type_ids=mm_token_type_ids,
         )
 
+    if ptd_position_ids is not None:
+        language_config = getattr(self.language_model, "config", self.config)
+        if getattr(language_config, "_attn_implementation", None) == "flash_attention_2":
+            raise ValueError("PTD training requires SDPA or eager attention.")
+
+    from model.ptd_mask_utils import prepare_ptd_attention
+
+    position_ids, language_attention_mask = prepare_ptd_attention(
+        position_ids=position_ids,
+        attention_mask=attention_mask,
+        ptd_position_ids=ptd_position_ids,
+        ptd_prefix_lengths=ptd_prefix_lengths,
+        ptd_context_limits=ptd_context_limits,
+        dtype=inputs_embeds.dtype,
+    )
+
     outputs = self.language_model(
         input_ids=None,
         position_ids=position_ids,
-        attention_mask=attention_mask,
+        attention_mask=language_attention_mask,
         past_key_values=past_key_values,
         inputs_embeds=inputs_embeds,
         cache_position=cache_position,
