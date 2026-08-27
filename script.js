@@ -68,7 +68,6 @@ syncSideNavigation();
 
 const teaserVideo = document.querySelector('.hero-video-shell video');
 teaserVideo?.addEventListener('mouseenter', () => teaserVideo.play().catch(() => {}));
-teaserVideo?.addEventListener('mouseleave', () => teaserVideo.pause());
 
 const speedCarousel = document.querySelector('[data-speed-carousel]');
 const speedTrack = speedCarousel?.querySelector('[data-speed-track]');
@@ -108,7 +107,6 @@ if (speedCarousel && speedTrack && speedSlides.length) {
     video?.addEventListener('mouseenter', () => {
       if (index === speedIndex) playSpeedVideo(video);
     });
-    video?.addEventListener('mouseleave', () => video.pause());
   });
 
   speedPrevious?.addEventListener('click', () => showSpeedSlide(speedIndex - 1, true));
