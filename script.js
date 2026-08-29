@@ -69,6 +69,9 @@ syncSideNavigation();
 const teaserVideo = document.querySelector('.hero-video-shell video');
 teaserVideo?.addEventListener('mouseenter', () => teaserVideo.play().catch(() => {}));
 
+const examplesVideo = document.querySelector('.ptd-examples-video-shell video');
+examplesVideo?.addEventListener('mouseenter', () => examplesVideo.play().catch(() => {}));
+
 const speedCarousel = document.querySelector('[data-speed-carousel]');
 const speedTrack = speedCarousel?.querySelector('[data-speed-track]');
 const speedSlides = [...(speedCarousel?.querySelectorAll('[data-speed-slide]') || [])];

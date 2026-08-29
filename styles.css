@@ -2876,6 +2876,47 @@ a.button:hover {
   border-bottom: 1px solid #e0e5ed;
 }
 
+.academic-theme .ptd-examples-media {
+  width: min(100%, 1080px);
+  margin: 0 auto 96px;
+  overflow: hidden;
+  background: #fff;
+  border: 1px solid #dbe3ef;
+  border-radius: 15px;
+  box-shadow: 0 16px 42px rgba(31, 65, 105, 0.08);
+}
+
+.academic-theme .ptd-examples-video-shell {
+  overflow: hidden;
+  background: #0c100e;
+}
+
+.academic-theme .ptd-examples-video-shell video {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  display: block;
+  object-fit: contain;
+}
+
+.academic-theme .ptd-examples-media figcaption {
+  margin: 0;
+  padding: 14px 18px 15px;
+  color: #6a7771;
+  background: #fff;
+  border-top: 1px solid #dce3df;
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: left;
+}
+
+.academic-theme .ptd-examples-media figcaption strong {
+  color: #29362f;
+}
+
+.academic-theme .speed-comparison-intro {
+  margin-top: 0;
+}
+
 .academic-theme .speed-carousel {
   position: relative;
   width: min(100%, 1080px);
