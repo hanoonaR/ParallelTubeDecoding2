@@ -2427,7 +2427,7 @@ a.button:hover {
 }
 
 .academic-theme .affiliation-logo-mbzuai {
-  height: 62px;
+  height: 68px;
 }
 
 .academic-theme .affiliation-logo-uc-merced {
@@ -2878,7 +2878,7 @@ a.button:hover {
 
 .academic-theme .ptd-examples-media {
   width: min(100%, 1080px);
-  margin: 0 auto 96px;
+  margin: 0 auto 64px;
   overflow: hidden;
   background: #fff;
   border: 1px solid #dbe3ef;
@@ -3624,7 +3624,7 @@ a.button:hover {
   }
 
   .academic-theme .affiliation-logo-mbzuai {
-    height: 50px;
+    height: 54px;
   }
 
   .academic-theme .affiliation-logo-uc-merced {
