@@ -2913,14 +2913,14 @@ a.button:hover {
   color: #29362f;
 }
 
-.academic-theme .speed-comparison-intro {
-  margin-top: 0;
+.academic-theme .speed-comparison-media {
+  width: min(100%, 1080px);
+  margin: 0 auto;
 }
 
 .academic-theme .speed-carousel {
   position: relative;
-  width: min(100%, 1080px);
-  margin-inline: auto;
+  width: 100%;
   outline: none;
 }
 
@@ -2933,8 +2933,27 @@ a.button:hover {
   overflow: hidden;
   background: #0c100e;
   border: 1px solid #dbe3ef;
-  border-radius: 15px;
+  border-bottom: 0;
+  border-radius: 15px 15px 0 0;
   box-shadow: 0 16px 42px rgba(31, 65, 105, 0.08);
+}
+
+.academic-theme .speed-comparison-media figcaption {
+  margin: 0;
+  padding: 14px 18px 15px;
+  color: #6a7771;
+  background: #fff;
+  border: 1px solid #dbe3ef;
+  border-top: 1px solid #dce3df;
+  border-radius: 0 0 15px 15px;
+  box-shadow: 0 16px 42px rgba(31, 65, 105, 0.08);
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: left;
+}
+
+.academic-theme .speed-comparison-media figcaption strong {
+  color: #29362f;
 }
 
 .academic-theme .speed-carousel-track {
