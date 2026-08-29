@@ -3,10 +3,7 @@
 
 import argparse
 import json
-import math
 from pathlib import Path
-
-import torch
 
 
 PROMPT = (
@@ -17,28 +14,47 @@ PROMPT = (
 
 
 def read_video(path):
-    import decord
+    import cv2
 
-    reader = decord.VideoReader(str(path), num_threads=1)
-    frame_count = len(reader)
-    fps = float(reader.get_avg_fps())
-    if frame_count <= 0 or not math.isfinite(fps) or fps <= 0:
+    capture = cv2.VideoCapture(str(path))
+    frame_count = int(round(capture.get(cv2.CAP_PROP_FRAME_COUNT)))
+    fps = float(capture.get(cv2.CAP_PROP_FPS))
+    capture.release()
+    if frame_count <= 0 or fps <= 0:
         raise ValueError(f"Invalid video metadata: {path}")
     return frame_count, fps
 
 
 def sample_frames(frame_count, fps):
-    count = math.floor(frame_count / fps * 2.0)
+    count = int(frame_count / fps * 2.0)
     count = min(max(count, 4), 64, frame_count)
-    return torch.linspace(0, frame_count - 1, count).round().long().tolist()
+    if count <= 1:
+        return [0]
+    return [round(index * (frame_count - 1) / (count - 1)) for index in range(count)]
+
+
+def annotation_to_video_frame(frame, annotation_frames, video_frames):
+    if not 1 <= frame <= annotation_frames:
+        raise ValueError(f"Annotation frame {frame} is outside [1, {annotation_frames}].")
+    if annotation_frames == 1 or video_frames == 1:
+        return 0
+    return round((frame - 1) * (video_frames - 1) / (annotation_frames - 1))
+
+
+def video_to_annotation_frame(frame, annotation_frames, video_frames):
+    if not 0 <= frame < video_frames:
+        raise ValueError(f"Video frame {frame} is outside [0, {video_frames - 1}].")
+    if annotation_frames == 1 or video_frames == 1:
+        return 1
+    return round(frame * (annotation_frames - 1) / (video_frames - 1)) + 1
 
 
 def normalize_box(box, width, height):
     x, y, box_width, box_height = [float(value) for value in box]
-    x1, x2 = max(0.0, x), min(width, x + box_width)
-    y1, y2 = max(0.0, y), min(height, y + box_height)
-    if not 0 <= x1 < x2 <= width or not 0 <= y1 < y2 <= height:
-        return None
+    x1 = max(0.0, min(x, width))
+    y1 = max(0.0, min(y, height))
+    x2 = max(0.0, min(x + box_width, width))
+    y2 = max(0.0, min(y + box_height, height))
     normalized = [
         round(x1 / width * 1000),
         round(y1 / height * 1000),
@@ -60,10 +76,13 @@ def build_record(video, caption, boxes):
     answer = [f"<|object_ref_start|>{caption}<|object_ref_end|>"]
     answer.append(f"<|time_start|><t{indices[0]}><t{indices[-1]}><|time_end|>")
     for time_index, box in boxes:
-        coordinates = "".join(f"<{value}>" for value in box)
+        coordinates = "".join(
+            f"<{max(0, min(int(value), 1000))}>" for value in box
+        )
         answer.append(f"<t{time_index}><|box_start|>{coordinates}<|box_end|>")
     return {
         "video": video,
+        "mtp_format": "time_anchored_boxes",
         "conversations": [
             {
                 "from": "human",
@@ -97,12 +116,18 @@ def prepare(args):
             skipped += 1
             continue
 
+        tube_start_video = annotation_to_video_frame(
+            tube_start, annotation_frames, frame_count
+        )
+        tube_end_video = annotation_to_video_frame(
+            tube_end, annotation_frames, frame_count
+        )
         boxes = []
         for time_index, video_frame in enumerate(sample_frames(frame_count, fps), start=1):
-            annotation_frame = (
-                1
-                if annotation_frames == 1 or frame_count == 1
-                else round(video_frame * (annotation_frames - 1) / (frame_count - 1)) + 1
+            if not tube_start_video <= video_frame <= tube_end_video:
+                continue
+            annotation_frame = video_to_annotation_frame(
+                video_frame, annotation_frames, frame_count
             )
             if not tube_start <= annotation_frame <= tube_end:
                 continue
@@ -111,8 +136,10 @@ def prepare(args):
                 float(sample["width"]),
                 float(sample["height"]),
             )
-            if box is not None:
-                boxes.append((time_index, box))
+            if box is None:
+                boxes = []
+                break
+            boxes.append((time_index, box))
 
         record = build_record(
             str(Path(args.video_prefix) / video_name), caption, boxes

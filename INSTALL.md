@@ -12,13 +12,16 @@ conda activate ptd
 
 pip install --upgrade pip
 pip install -r requirements.txt
-pip install qwen-vl-utils
 ```
 
 The requirements include the CUDA 12.8 PyTorch packages. If your system uses a
 different CUDA or ROCm version, install the matching PyTorch build for your
 system and adjust the PyTorch package pins in `requirements.txt` before
 installing the remaining dependencies.
+
+The PTD TCL/BPS benchmark additionally requires a FlashAttention-2 build that
+matches your CUDA or ROCm/PyTorch environment. Training and Quantized (NTP)
+inference use SDPA and do not require that optional backend.
 
 ## Check the installation
 

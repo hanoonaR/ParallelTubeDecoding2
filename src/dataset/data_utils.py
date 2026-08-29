@@ -220,6 +220,15 @@ def get_video_info(
     if fps is not None and nframes is not None:
         raise ValueError("Only one of fps and nframes may be set.")
 
+    if temporal_patch_size == 1:
+        # qwen-vl-utils 0.0.14 otherwise rounds sampling to pairs of distinct
+        # frames. PTD keeps Qwen's Conv3d width but samples one distinct frame
+        # per time token; patch_qwen3_video_processor duplicates it only when
+        # constructing the Conv3d input.
+        import qwen_vl_utils.vision_process as qwen_vision_process
+
+        qwen_vision_process.FRAME_FACTOR = 1
+
     video_options = dict(video) if isinstance(video, dict) else {}
     content = {
         "type": "video",

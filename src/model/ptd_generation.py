@@ -1,13 +1,26 @@
 from __future__ import annotations
 
 from collections.abc import MutableMapping
+from contextlib import nullcontext
 from dataclasses import dataclass
+import time
 from typing import Any, Optional
 
 import torch
 import torch.nn.functional as F
 
 from model.ptd_mask_utils import build_cached_ptd_attention_mask_4d
+from model.ptd_flash_attention import (
+    build_ptd_flash_attention_plan,
+    resolve_ptd_attn_implementation,
+    use_ptd_flash_attention,
+)
+from model.ptd_reusable_cache import (
+    make_reusable_ptd_cache,
+    pad_mask_to_ptd_cache_capacity,
+    ptd_cache_capacity,
+    rewind_reusable_ptd_cache,
+)
 
 
 @dataclass
@@ -15,6 +28,7 @@ class PTDGenerationResult:
     steps: int
     generated_tokens: int
     stopped: bool
+    decode_latency_s: Optional[float] = None
     trace: Optional["PTDRolloutTrace"] = None
 
 
@@ -475,9 +489,16 @@ def _cache_length(past_key_values: Any) -> int:
     return 0
 
 
+def _synchronize_for_timing(device: torch.device) -> None:
+    if torch.device(device).type == "cuda" and torch.cuda.is_available():
+        torch.cuda.synchronize(device)
+
+
 def _crop_past_key_values(past_key_values: Any, max_length: int) -> Any:
     if past_key_values is None:
         return None
+    if rewind_reusable_ptd_cache(past_key_values, max_length):
+        return past_key_values
     if hasattr(past_key_values, "crop"):
         past_key_values.crop(max_length)
         return past_key_values
@@ -535,9 +556,10 @@ def _run_language_model(
     input_ids: torch.Tensor,
     past_key_values: Any,
     *,
-    attention_mask: torch.Tensor,
+    attention_mask: Optional[torch.Tensor],
     position_offsets: torch.Tensor,
     logits_to_keep: int,
+    ptd_attention_plan: Any = None,
 ):
     core = _core_model(model)
     wrapped_model = getattr(model, "module", model)
@@ -556,16 +578,23 @@ def _run_language_model(
         input_ids=input_ids,
         position_offsets=position_offsets,
     )
-    outputs = language_model(
-        input_ids=None,
-        inputs_embeds=inputs_embeds,
-        position_ids=position_ids,
-        attention_mask=attention_mask,
-        past_key_values=past_key_values,
-        use_cache=True,
-        visual_pos_masks=None,
-        deepstack_visual_embeds=None,
-    )
+    attention_context = nullcontext()
+    extra_forward_kwargs = {}
+    if ptd_attention_plan is not None:
+        attention_context = use_ptd_flash_attention(language_model)
+        extra_forward_kwargs["ptd_attention_plan"] = ptd_attention_plan
+    with attention_context:
+        outputs = language_model(
+            input_ids=None,
+            inputs_embeds=inputs_embeds,
+            position_ids=position_ids,
+            attention_mask=attention_mask,
+            past_key_values=past_key_values,
+            use_cache=True,
+            visual_pos_masks=None,
+            deepstack_visual_embeds=None,
+            **extra_forward_kwargs,
+        )
     hidden_states = outputs.last_hidden_state[:, -logits_to_keep:, :]
     return outputs, lm_head(hidden_states)
 
@@ -644,6 +673,7 @@ def _run_cached_ptd_probe(
     temperature: float,
     top_p: Optional[float],
     top_k: Optional[int],
+    pbd_attn_implementation: str,
 ) -> tuple[torch.Tensor, Any]:
     committed_len = generated.shape[1]
     prefix_kv_len = _cache_length(past_key_values)
@@ -661,15 +691,38 @@ def _run_cached_ptd_probe(
     )
     num_blocks = int(torch.as_tensor(query_token_ids).numel())
     suffix_len = num_blocks * block_size
-    probe_attention_mask = build_cached_ptd_attention_mask_4d(
-        past_len=prefix_kv_len,
-        catchup_len=catchup_len,
-        num_blocks=num_blocks,
-        context_limits=context_limits,
-        block_size=block_size,
-        device=query_ids.device,
-        dtype=next(_core_model(model).language_model.parameters()).dtype,
-    )
+    capacity = ptd_cache_capacity(past_key_values)
+    required_length = prefix_kv_len + query_ids.shape[1]
+    if capacity is not None and required_length > capacity:
+        raise RuntimeError(
+            f"PTD probe exceeds reusable KV capacity: {required_length} > {capacity}."
+        )
+
+    ptd_attention_plan = None
+    if pbd_attn_implementation == "flash_attention_2":
+        ptd_attention_plan = build_ptd_flash_attention_plan(
+            past_len=prefix_kv_len,
+            catchup_len=catchup_len,
+            num_blocks=num_blocks,
+            context_limits=context_limits,
+            block_size=block_size,
+            device=query_ids.device,
+        )
+
+    probe_attention_mask = None
+    if ptd_attention_plan is None:
+        probe_attention_mask = build_cached_ptd_attention_mask_4d(
+            past_len=prefix_kv_len,
+            catchup_len=catchup_len,
+            num_blocks=num_blocks,
+            context_limits=context_limits,
+            block_size=block_size,
+            device=query_ids.device,
+            dtype=next(_core_model(model).language_model.parameters()).dtype,
+        )
+        probe_attention_mask = pad_mask_to_ptd_cache_capacity(
+            probe_attention_mask, past_key_values
+        )
     outputs, block_logits = _run_language_model(
         model,
         query_ids,
@@ -677,6 +730,7 @@ def _run_cached_ptd_probe(
         attention_mask=probe_attention_mask,
         position_offsets=position_offsets,
         logits_to_keep=suffix_len,
+        ptd_attention_plan=ptd_attention_plan,
     )
     sampled = sample_token_ids(
         block_logits,
@@ -704,6 +758,8 @@ def generate_ptd(
     top_p: Optional[float] = None,
     top_k: Optional[int] = None,
     generation_format: str = "spatio_temporal_grounding",
+    pbd_attn_implementation: str = "sdpa",
+    measure_decode: bool = False,
     return_trace: bool = False,
 ) -> tuple[torch.Tensor, PTDGenerationResult]:
     """Generate a semantic reference and temporal segment with optional boxes.
@@ -731,6 +787,9 @@ def generate_ptd(
         raise ValueError(f"max_new_tokens must be non-negative, got {max_new_tokens}.")
     if "input_ids" not in inputs:
         raise ValueError("inputs must contain input_ids.")
+    pbd_attn_implementation = resolve_ptd_attn_implementation(
+        pbd_attn_implementation
+    )
 
     generated = inputs["input_ids"]
     if generated.ndim != 2 or generated.shape[0] != 1 or generated.shape[1] == 0:
@@ -783,6 +842,34 @@ def generate_ptd(
     past_key_values = getattr(prefill_outputs, "past_key_values", None)
     if past_key_values is None:
         raise RuntimeError("The model did not return past_key_values for PTD prefill.")
+    if pbd_attn_implementation == "flash_attention_2" and max_new_tokens > 0:
+        # Reserve the largest possible temporary probe suffix once. Rewinding
+        # this cache after each probe avoids repeatedly copying the prefix.
+        max_parallel_blocks = max(
+            1,
+            min(len(token_ids["ordered_time_tokens"]), max_new_tokens // 8),
+        )
+        cache_capacity = (
+            _cache_length(past_key_values)
+            + max_new_tokens
+            + block_size * max_parallel_blocks
+        )
+        past_key_values = make_reusable_ptd_cache(
+            past_key_values,
+            config=getattr(_core_model(model).language_model, "config", None),
+            max_cache_len=cache_capacity,
+        )
+    decode_start_time = None
+    decode_end_time = None
+    if measure_decode:
+        _synchronize_for_timing(generated.device)
+        decode_start_time = time.perf_counter()
+
+    def stop_decode_timer() -> None:
+        nonlocal decode_end_time
+        if decode_start_time is not None and decode_end_time is None:
+            _synchronize_for_timing(generated.device)
+            decode_end_time = time.perf_counter()
 
     def build_trace() -> Optional[PTDRolloutTrace]:
         if not return_trace:
@@ -843,10 +930,15 @@ def generate_ptd(
             # fallback keeps a rejected first PTD probe at zero task reward
             # without terminating the distributed job.
             generated_ids = generated.new_full((generated.shape[0], 1), eos_id)
+        decode_latency_s = None
+        if decode_start_time is not None:
+            stop_decode_timer()
+            decode_latency_s = max(decode_end_time - decode_start_time, 0.0)
         result = PTDGenerationResult(
             steps=step,
             generated_tokens=int(generated_ids.shape[1]),
             stopped=is_stopped,
+            decode_latency_s=decode_latency_s,
             trace=build_trace(),
         )
         return generated_ids, result
@@ -866,6 +958,7 @@ def generate_ptd(
             "temperature": temperature,
             "top_p": top_p,
             "top_k": top_k,
+            "pbd_attn_implementation": pbd_attn_implementation,
         }
         blocks, past_key_values = _run_cached_ptd_probe(
             model,
@@ -1034,6 +1127,10 @@ def generate_ptd(
         probe_position_starts=box_position_starts,
         context_limits=box_context_limits,
     )
+    # For a complete tube, TCL ends with the final spatial GPU operation.
+    # Format validation, text assembly, decoding, scoring, and I/O are outside
+    # the timed region.
+    stop_decode_timer()
     step += 1
     record_probe(
         raw_boxes,

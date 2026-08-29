@@ -38,6 +38,7 @@ torchrun --standalone --nproc-per-node="$GPUS" src/train/train_grpo.py \
   --top_p 1.0 \
   --top_k 50 \
   --beta 0.04 \
+  --reward_names "temporal_iou_reward,spatial_reward" \
   --loss_type grpo \
   --use_vllm false \
   --learning_rate 5e-6 \
@@ -49,6 +50,7 @@ torchrun --standalone --nproc-per-node="$GPUS" src/train/train_grpo.py \
   --fps 2 \
   --max_frames 64 \
   --temporal_patch_size 1 \
+  --video_max_pixels $((360 * 420)) \
   --logging_steps 10 \
   --save_strategy steps \
   --save_steps 200 \

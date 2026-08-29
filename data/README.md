@@ -1,4 +1,4 @@
-# Preparing PTD training data
+# Preparing PTD data
 
 The preparation scripts convert VidSTG and HC-STVG annotations into the JSON
 consumed by PTD SFT. Run them from the repository root.
@@ -75,6 +75,7 @@ Each sample contains one video and one user/assistant pair:
 ```json
 {
   "video": "vidstg/video/example.mp4",
+  "mtp_format": "time_anchored_boxes",
   "conversations": [
     {
       "from": "human",
@@ -89,3 +90,59 @@ Each sample contains one video and one user/assistant pair:
 ```
 
 The prepared annotation format is accepted by the SFT data loader.
+
+## Evaluation annotations
+
+No dataset annotations or videos are distributed with this repository. The
+following scripts convert the official benchmark annotations into the JSONL
+files consumed by the lmms-eval tasks under `evaluation/`.
+
+VidSTG keeps the benchmark's inclusive clip bounds and half-open tube bounds:
+
+```bash
+python data/prepare_vidstg_eval.py \
+  --annotations /path/to/vidstg_annotations/test.json \
+  --video-prefix vidstg/video \
+  --output /path/to/vidstg_test.jsonl
+```
+
+Create one combined HC-STVG file by writing v1 first and appending v2. The
+builder maps the 1-based annotation timeline to decoded video frames before
+matching the exact 2 FPS sampling grid.
+
+```bash
+python data/prepare_hcstvg_eval.py \
+  --version v1 \
+  --annotations /path/to/hc-stvg_v1/test.json \
+  --video-root /path/to/VIDEO_ROOT/hc-stvg_v1/videos_v1 \
+  --video-prefix hc-stvg_v1/videos_v1 \
+  --output /path/to/hcstvg_test.jsonl
+
+python data/prepare_hcstvg_eval.py \
+  --version v2 \
+  --annotations /path/to/hc-stvg_v2/annos/test.json \
+  --video-root /path/to/VIDEO_ROOT/hc-stvg_v2/v2_videos_test \
+  --video-prefix hc-stvg_v2/v2_videos_test \
+  --output /path/to/hcstvg_test.jsonl \
+  --append
+```
+
+If v2 videos are stored under part directories, also pass `--video-parts` and
+point `--video-root` at their common parent.
+
+Convert the official Charades-STA text file and ActivityNet Captions JSON:
+
+```bash
+python data/prepare_temporal_eval.py \
+  --benchmark charades-sta \
+  --annotations /path/to/charades_sta_test.txt \
+  --output /path/to/charades_sta_test.jsonl
+
+python data/prepare_temporal_eval.py \
+  --benchmark activitynet \
+  --annotations /path/to/activitynet_captions_val_2.json \
+  --output /path/to/activitynet_test.jsonl
+```
+
+Use `--video-prefix` when the stored video paths should include a relative
+directory, and `--video-extension` if the files are not MP4.

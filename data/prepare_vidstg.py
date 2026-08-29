@@ -65,6 +65,7 @@ def build_record(video, caption, boxes):
         answer.append(f"<t{time_index}><|box_start|>{coordinates}<|box_end|>")
     return {
         "video": video,
+        "mtp_format": "time_anchored_boxes",
         "conversations": [
             {
                 "from": "human",

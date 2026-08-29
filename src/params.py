@@ -268,6 +268,15 @@ class GRPOArguments(GRPOConfigTRL):
     top_k: int = 50
     min_p: Optional[float] = None
     repetition_penalty: float = 1.0
+    reward_names: str = field(
+        default="temporal_iou_reward,spatial_reward",
+        metadata={
+            "help": (
+                "Comma-separated PTD rewards. The release uses exactly "
+                "temporal_iou_reward and spatial_reward."
+            )
+        },
+    )
     max_completion_length: int = 256
     max_prompt_length: int = 512
     use_liger_loss: bool = True

@@ -10,13 +10,17 @@ from transformers import (
 )
 from model.load_model import get_qwen_vl_generation_backbone, load_qwen_vl_generation_model
 from model.ptd_generation import build_ptd_token_ids, configure_ptd_model
+from model.ptd_tokens import (
+    NUM_TIME_TOKENS,
+    ptd_token_ids as validate_ptd_token_ids,
+    train_only_ptd_token_rows,
+)
 
 from trainer import QwenGRPOTrainer
 from dataset import make_grpo_data_module
 from dataset.data_utils import patch_processor_with_time_tokens, patch_qwen3_video_processor
 from params import DataArguments, ModelArguments, GRPOArguments
-from train.train_sft import PTD_TIME_TOKENS, train_ptd_token_rows
-from train.train_utils import get_peft_state_maybe_zero_3, get_peft_state_non_lora_maybe_zero_3, safe_save_model_for_hf_trainer
+from train.train_utils import get_peft_state_maybe_zero_3, get_peft_state_non_lora_maybe_zero_3, patch_deepspeed_zero3_peft_hooks, safe_save_model_for_hf_trainer
 from utils import load_reward_funcs
 
 local_rank = None
@@ -111,6 +115,12 @@ def train():
         raise ValueError("PTD GRPO requires 16-bit model weights.")
     if training_args.weight_decay != 0:
         raise ValueError("PTD token-row training requires zero weight decay.")
+    if not training_args.freeze_vision_tower or not training_args.freeze_merger:
+        raise ValueError("PTD GRPO keeps the vision encoder and merger frozen.")
+    if training_args.vision_lora:
+        raise ValueError("PTD GRPO applies LoRA only to the language model.")
+    if training_args.unfreeze_topk_llm or training_args.unfreeze_topk_vision:
+        raise ValueError("PTD GRPO does not unfreeze base language or vision layers.")
 
     if training_args.lora_enable and not training_args.freeze_llm:
         raise ValueError("If `lora_enable` is True, `freeze_llm` must also be True.")
@@ -159,6 +169,8 @@ def train():
     )
     if model.config.model_type != "qwen3_vl":
         raise ValueError("PTD GRPO requires a Qwen3-VL model.")
+    if getattr(model.config, "ptd_block_size", None) != 6:
+        raise ValueError("PTD GRPO must start from a merged PTD SFT checkpoint.")
     model.config.use_cache = False
     configure_ptd_model(model)
     model_to_configure = model
@@ -187,13 +199,15 @@ def train():
     peft_config = None
 
     if training_args.lora_enable:
+        patch_deepspeed_zero3_peft_hooks()
         lora_namespan_exclude = training_args.lora_namespan_exclude
         peft_config = LoraConfig(
             r=training_args.lora_rank,
             lora_alpha=training_args.lora_alpha,
             target_modules=find_target_linear_names(model, lora_namespan_exclude=lora_namespan_exclude, num_lora_modules=training_args.num_lora_modules),
             lora_dropout=training_args.lora_dropout,
-            bias=training_args.lora_bias
+            bias=training_args.lora_bias,
+            modules_to_save=["embed_tokens", "lm_head"],
         )
         if training_args.bits == 16:
             if training_args.bf16:
@@ -202,16 +216,26 @@ def train():
                 model.to(torch.float16)
 
     processor = AutoProcessor.from_pretrained(model_args.model_id)
+    validate_ptd_token_ids(
+        processor.tokenizer, num_time_tokens=NUM_TIME_TOKENS
+    )
+    if getattr(model.config, "ptd_num_time_tokens", None) != NUM_TIME_TOKENS:
+        raise ValueError("PTD GRPO must start from a merged PTD SFT checkpoint.")
     ptd_tokens = build_ptd_token_ids(
         processor.tokenizer,
-        max_time_tokens=PTD_TIME_TOKENS,
+        max_time_tokens=NUM_TIME_TOKENS,
     )
-    if model.get_input_embeddings().num_embeddings != len(processor.tokenizer):
+    output_embeddings = model.get_output_embeddings()
+    if (
+        model.get_input_embeddings().num_embeddings != len(processor.tokenizer)
+        or output_embeddings is None
+        or output_embeddings.weight.shape[0] != len(processor.tokenizer)
+    ):
         raise ValueError("PTD GRPO must start from a merged PTD SFT checkpoint.")
     patch_qwen3_video_processor(processor)
     patch_processor_with_time_tokens(
         processor,
-        max_time_tokens=PTD_TIME_TOKENS,
+        max_time_tokens=NUM_TIME_TOKENS,
     )
     processor.image_processor.do_resize = False
 
@@ -233,12 +257,20 @@ def train():
                                               processor=processor,
                                               data_args=data_args)
 
+    reward_names = tuple(
+        name.strip() for name in training_args.reward_names.split(",") if name.strip()
+    )
+    if reward_names != ("temporal_iou_reward", "spatial_reward"):
+        raise ValueError(
+            "PTD GRPO uses --reward_names "
+            "temporal_iou_reward,spatial_reward."
+        )
     available_rewards = {
         reward.__name__: reward for reward in load_reward_funcs("train.reward_funcs")
     }
     reward_funcs = [
         available_rewards[name]
-        for name in ("temporal_iou_reward", "spatial_reward")
+        for name in reward_names
         if name in available_rewards
     ]
     if len(reward_funcs) != 2:
@@ -267,7 +299,7 @@ def train():
         *ptd_tokens["coord_id_to_value"],
         *ptd_tokens["ordered_time_tokens"],
     ]
-    train_ptd_token_rows(trainer.model, trainable_ptd_tokens)
+    train_only_ptd_token_rows(trainer.model, trainable_ptd_tokens)
 
     if list(pathlib.Path(training_args.output_dir).glob("checkpoint-*")):
         trainer.train(resume_from_checkpoint=True)

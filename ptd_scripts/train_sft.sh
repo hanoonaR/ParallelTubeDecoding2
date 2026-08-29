@@ -1,6 +1,6 @@
 #!/bin/bash
 
-export MODEL_ID="Qwen/Qwen3-VL-4B-Instruct"
+export INITIALIZED_MODEL=""
 export ANNOTATIONS=""
 export VIDEO_ROOT=""
 export OUTPUT_DIR=""
@@ -11,7 +11,7 @@ export PYTHONPATH="$PWD/src:$PWD"
 
 torchrun --standalone --nproc-per-node="$GPUS" src/train/train_sft.py \
   --deepspeed ptd_scripts/zero3.json \
-  --model_id "$MODEL_ID" \
+  --model_id "$INITIALIZED_MODEL" \
   --data_path "$ANNOTATIONS" \
   --image_folder "$VIDEO_ROOT" \
   --output_dir "$OUTPUT_DIR" \
@@ -39,6 +39,7 @@ torchrun --standalone --nproc-per-node="$GPUS" src/train/train_sft.py \
   --fps 2 \
   --max_frames 64 \
   --temporal_patch_size 1 \
+  --video_max_pixels $((360 * 420)) \
   --max_seq_length 32768 \
   --logging_steps 10 \
   --save_strategy steps \

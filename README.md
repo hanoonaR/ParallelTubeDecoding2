@@ -37,9 +37,10 @@ Spatio-temporal video grounding requires identifying when a queried event occurs
 | Component | Location |
 | --- | --- |
 | Install the PTD environment | [Installation guide](INSTALL.md) |
-| Prepare VidSTG and HC-STVG annotations | [Data preparation guide](data/README.md) and the [VidSTG](data/prepare_vidstg.py), [HC-STVG v1](data/prepare_hcstvg_v1.py), and [HC-STVG v2](data/prepare_hcstvg_v2.py) preparation scripts |
+| Prepare training and evaluation annotations | [Data preparation guide](data/README.md), including SFT preparation for VidSTG/HC-STVG and evaluation preparation for all four released benchmarks |
 | Run SFT, merge the adapter, and run GRPO | [Training guide](ptd_scripts/README.md), [SFT launcher](ptd_scripts/train_sft.sh), [merge script](ptd_scripts/merge_lora.sh), and [GRPO launcher](ptd_scripts/train_grpo.sh) |
 | Evaluate VidSTG, HC-STVG, Charades-STA, and ActivityNet | [Evaluation guide](evaluation/README.md) and [lmms-eval task definitions](evaluation/lmms_eval/lmms_eval/tasks) |
+| Measure Quantized/PTD TCL and BPS | [Efficiency runner](evaluation/run_efficiency.sh), [reporter](evaluation/report_efficiency.py), and the [evaluation guide](evaluation/README.md#tcl-and-bps) |
 
 ## 💡 Parallel Tube Decoding
 
@@ -47,7 +48,7 @@ Spatio-temporal video grounding requires identifying when a queried event occurs
   <img src="assets/figures/sbd_vs_ptd_attention.png" width="100%" alt="Attention masks for Sequential Block Decoding and Parallel Tube Decoding">
 </p>
 
-**MTP attention masks for Sequential Block Decoding and PTD.** Sequential Block Decoding retains causal attention across spatial blocks. PTD replaces this cross-box dependency with Decoupled Block Attention: every spatial block accesses the shared multimodal prefix and temporal block while all other spatial blocks remain masked.
+**Attention masks for Sequential Block Decoding and PTD.** Sequential Block Decoding retains causal attention across spatial blocks. PTD replaces this cross-box dependency with Decoupled Block Attention: every spatial block accesses the shared multimodal prefix and temporal block while all other spatial blocks remain masked.
 
 ## 📊 Main Results
 
@@ -86,12 +87,6 @@ Spatio-temporal video grounding requires identifying when a queried event occurs
 </p>
 
 **Table 4: Zero-shot temporal grounding.** Results on Charades-STA and ActivityNet Captions without task-specific training. Our model improves over the strongest prior zero-shot methods, including under stricter temporal-overlap thresholds.
-
-<p align="center">
-  <img src="assets/tables/table5.png" width="100%" alt="Zero-shot grounded VideoQA and referring video object tracking results">
-</p>
-
-**Table 5: Generalization to grounded VideoQA and video object tracking.** Left: zero-shot evidence-aware question answering on ReXTime. Right: referring video object tracking on Ref-DAVIS, Ref-YT-VOS, and ReasonVOS using SAM2 or SAM3.
 
 ### 🔬 Ablation study
 
